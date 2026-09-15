@@ -106,16 +106,7 @@ com/example/gyroble/
 ```
 
 依赖要求：`minSdkVersion ≥ 18`（BLE 最低要求），建议 `21+`；无第三方库依赖，仅 `androidx.annotation`（可选）。
-参考实现使用了 Lambda 表达式，目标工程需开启 Java 8：
-
-```gradle
-android {
-    compileOptions {
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
-    }
-}
-```
+参考实现全部使用**匿名内部类**编写，未使用 Lambda 表达式，兼容 Java 7 源码级别的旧工具链，无需额外配置即可编入目标工程。
 
 ### 2.3 步骤二：AndroidManifest 注册
 
@@ -400,17 +391,16 @@ byte[] f4 = GyroProtocol.buildExitNavigation();          // AA 55 00 05 05
 
 ```java
 GyroProtocol.Parser parser = new GyroProtocol.Parser();
-parser.feed(notificationBytes, (cmd, data) -> {
-    switch (cmd) {
-        case GyroProtocol.CMD_NAV_DATA:
+parser.feed(notificationBytes, new GyroProtocol.Parser.FrameListener() {
+    @Override
+    public void onFrame(byte cmd, byte[] data) {
+        if (cmd == GyroProtocol.CMD_NAV_DATA) {
             GyroProtocol.NavData nav = GyroProtocol.parseNavData(data);
-            break;
-        case GyroProtocol.CMD_ACK:
+        } else if (cmd == GyroProtocol.CMD_ACK) {
             int[] ack = GyroProtocol.parseAck(data);   // [被应答CMD, 结果码]
-            break;
-        case GyroProtocol.CMD_NORTH_SEEK_RESULT:
+        } else if (cmd == GyroProtocol.CMD_NORTH_SEEK_RESULT) {
             int[] r = GyroProtocol.parseNorthSeekResult(data); // [结果码, 方位角x100]
-            break;
+        }
     }
 });
 ```

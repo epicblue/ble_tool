@@ -30,6 +30,9 @@ import java.util.UUID;
  *  - 提供 5 条业务命令的发送入口（设置纬度/寻北/进入导航/退出导航 + 查询）；
  *  - 接收通知数据 → {@link GyroProtocol.Parser} 流式解帧 → 主线程回调。
  *
+ * 说明：本类全部使用匿名内部类实现回调，未使用 Lambda 表达式，
+ * 兼容 Java 7 源码级别的旧工具链，无需额外配置即可编入任何工程。
+ *
  * 用法示例见指导文档第 4.6 节。
  */
 public class GyroBleManager {
@@ -168,26 +171,29 @@ public class GyroBleManager {
             if (action == null) {
                 return;
             }
-            switch (action) {
-                case BluetoothLeService.ACTION_GATT_CONNECTED:
-                    post(() -> callback.onConnected());
-                    break;
-                case BluetoothLeService.ACTION_GATT_DISCONNECTED:
-                    targetChar = null;
-                    parser.reset();
-                    post(() -> callback.onDisconnected());
-                    break;
-                case BluetoothLeService.ACTION_GATT_SERVICES_DISCOVERED:
-                    setupTargetCharacteristic();
-                    break;
-                case BluetoothLeService.ACTION_DATA_AVAILABLE:
-                    byte[] data = intent.getByteArrayExtra(BluetoothLeService.EXTRA_BYTE_DATA);
-                    if (data != null && data.length > 0) {
-                        parser.feed(data, frameListener);
+            if (BluetoothLeService.ACTION_GATT_CONNECTED.equals(action)) {
+                post(new Runnable() {
+                    @Override
+                    public void run() {
+                        callback.onConnected();
                     }
-                    break;
-                default:
-                    break;
+                });
+            } else if (BluetoothLeService.ACTION_GATT_DISCONNECTED.equals(action)) {
+                targetChar = null;
+                parser.reset();
+                post(new Runnable() {
+                    @Override
+                    public void run() {
+                        callback.onDisconnected();
+                    }
+                });
+            } else if (BluetoothLeService.ACTION_GATT_SERVICES_DISCOVERED.equals(action)) {
+                setupTargetCharacteristic();
+            } else if (BluetoothLeService.ACTION_DATA_AVAILABLE.equals(action)) {
+                byte[] data = intent.getByteArrayExtra(BluetoothLeService.EXTRA_BYTE_DATA);
+                if (data != null && data.length > 0) {
+                    parser.feed(data, frameListener);
+                }
             }
         }
     };
@@ -243,7 +249,17 @@ public class GyroBleManager {
                 targetChar = ch;
                 bleService.setCharacteristicNotification(ch, true);
                 // 与演示工程一致：稍作延时再通知上层，避免 GATT 操作过于密集引发 133 错误
-                mainHandler.postDelayed(() -> post(() -> callback.onServiceReady()), 300);
+                mainHandler.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        post(new Runnable() {
+                            @Override
+                            public void run() {
+                                callback.onServiceReady();
+                            }
+                        });
+                    }
+                }, 300);
                 return;
             }
         }
@@ -253,35 +269,45 @@ public class GyroBleManager {
     /* ------------------------------------------------------------------ */
     /* 协议帧分发                                                           */
     /* ------------------------------------------------------------------ */
-    private final GyroProtocol.Parser.FrameListener frameListener = (cmd, data) -> {
-        switch (cmd) {
-            case GyroProtocol.CMD_ACK: {
-                int[] ack = GyroProtocol.parseAck(data);
-                if (ack != null) {
-                    post(() -> callback.onAck(ack[0], ack[1]));
+    private final GyroProtocol.Parser.FrameListener frameListener =
+            new GyroProtocol.Parser.FrameListener() {
+                @Override
+                public void onFrame(byte cmd, byte[] data) {
+                    if (cmd == GyroProtocol.CMD_ACK) {
+                        final int[] ack = GyroProtocol.parseAck(data);
+                        if (ack != null) {
+                            post(new Runnable() {
+                                @Override
+                                public void run() {
+                                    callback.onAck(ack[0], ack[1]);
+                                }
+                            });
+                        }
+                    } else if (cmd == GyroProtocol.CMD_NAV_DATA) {
+                        final GyroProtocol.NavData nav = GyroProtocol.parseNavData(data);
+                        if (nav != null) {
+                            post(new Runnable() {
+                                @Override
+                                public void run() {
+                                    callback.onNavData(nav);
+                                }
+                            });
+                        }
+                    } else if (cmd == GyroProtocol.CMD_NORTH_SEEK_RESULT) {
+                        final int[] r = GyroProtocol.parseNorthSeekResult(data);
+                        if (r != null) {
+                            post(new Runnable() {
+                                @Override
+                                public void run() {
+                                    callback.onNorthSeekResult(r[0], r[1] / 100.0);
+                                }
+                            });
+                        }
+                    } else {
+                        Log.w(TAG, "unknown cmd frame: " + String.format("%02X", cmd));
+                    }
                 }
-                break;
-            }
-            case GyroProtocol.CMD_NAV_DATA: {
-                GyroProtocol.NavData nav = GyroProtocol.parseNavData(data);
-                if (nav != null) {
-                    post(() -> callback.onNavData(nav));
-                }
-                break;
-            }
-            case GyroProtocol.CMD_NORTH_SEEK_RESULT: {
-                int[] r = GyroProtocol.parseNorthSeekResult(data);
-                if (r != null) {
-                    double headingDeg = r[1] / 100.0;
-                    post(() -> callback.onNorthSeekResult(r[0], headingDeg));
-                }
-                break;
-            }
-            default:
-                Log.w(TAG, "unknown cmd frame: " + String.format("%02X", cmd));
-                break;
-        }
-    };
+            };
 
     /* ------------------------------------------------------------------ */
     /* 对外业务命令                                                          */
@@ -324,7 +350,7 @@ public class GyroBleManager {
 
     /** 按 BLE 单包长度切分（协议帧 ≤ 13 字节时默认不会触发切分） */
     private static List<byte[]> split(byte[] data, int size) {
-        List<byte[]> chunks = new ArrayList<>();
+        List<byte[]> chunks = new ArrayList<byte[]>();
         int offset = 0;
         while (offset < data.length) {
             int n = Math.min(size, data.length - offset);
@@ -345,6 +371,11 @@ public class GyroBleManager {
 
     private void postError(final String message) {
         Log.e(TAG, message);
-        post(() -> callback.onError(message));
+        post(new Runnable() {
+            @Override
+            public void run() {
+                callback.onError(message);
+            }
+        });
     }
 }
