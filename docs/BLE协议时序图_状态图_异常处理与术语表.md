@@ -405,6 +405,7 @@ flowchart TD
 | 中心设备 / 外设 | Central / Peripheral | BLE 角色：手机作为中心设备发起扫描和连接；陀螺仪模块作为外设广播并接受连接 |
 | GATT | Generic Attribute Profile | BLE 数据通讯的通用属性协议框架，定义了服务/特征值的组织与读写方式 |
 | ATT | Attribute Protocol | GATT 底层属性协议，MTU 概念即属于 ATT 层 |
+| 属性 | Attribute | ATT 的基本数据单元，由**四部分**组成：Handle（16 位句柄，唯一标识）、Type（UUID，表明属性含义）、**Value（实际承载的数据，读写操作的对象）**、Permissions（服务端读/写访问规则，客户端不可直接读取）。一个 GATT Characteristic 就是一组 Attribute 的组合（Declaration + Value + 若干 Descriptor），代码中 `characteristic.getValue()/setValue()` 操作的正是 Attribute Value |
 | 服务 | GATT Service | 外设上的一组功能的集合，由 128 位 UUID 标识（如本工程默认 `0000ffe0-...`） |
 | 特征值 | Characteristic | 服务中实际承载数据读写的单元，有 UUID 与属性（读/写/通知等），如默认的 `0000ffe1-...` |
 | 描述符 | Descriptor | 挂在特征值下的附加信息单元，最常用的是 CCCD |
