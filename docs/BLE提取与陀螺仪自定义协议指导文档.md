@@ -433,16 +433,85 @@ parser.feed(notificationBytes, new GyroProtocol.Parser.FrameListener() {
 内部已自动完成：绑定服务 → `connectGatt` → 服务发现 → 按配置 UUID 定位特征值 →
 使能通知 → 发送时组帧、分包（默认 20 字节）、串行写队列。
 
-### 4.5 扫描（可选）
+### 4.5 扫描与 deviceAddress 的获取
+
+`GyroBleManager.connect(deviceAddress)` 的参数是模块的**蓝牙 MAC 地址**
+（形如 `"AA:BB:CC:DD:EE:FF"` 的 6 组十六进制字符串，不是设备名、也不是 UUID），
+有三种获取方式：
+
+| 方式 | 来源 | 适用场景 |
+|---|---|---|
+| ① 扫描获取（推荐） | `onDeviceFound` 回调中 `device.getAddress()` | 标准流程，见下方代码 |
+| ② 已配对设备列表 | `BluetoothAdapter.getBondedDevices()` 遍历 | 仅已绑定的设备；很多 BLE 外设不配对 |
+| ③ 硬编码 | 模块标签/串口 AT 指令/系统蓝牙设置中查 MAC | 仅开发调试；生产环境不推荐 |
+
+> 注意：部分 BLE 外设使用**周期性轮换的随机地址**，之前扫到的地址可能失效。
+> 生产环境建议每次连接前先扫描，或与模块执行绑定；
+> 演示工程 `MainActivity` 即采用方式①，扫描后经 Intent 把地址传给连接页。
 
 ```java
 GyroBleScanner scanner = new GyroBleScanner(context);
 scanner.startScan("GYRO-", 10_000, new GyroBleScanner.ScanListener() {
     @Override public void onDeviceFound(BluetoothDevice device, int rssi, String name) {
-        // 按 device.getAddress() 去重后展示，点击后 manager.connect(address)
+        // device.getAddress() 即 connect() 所需的 deviceAddress
+        // 按地址去重后展示到列表，用户点击再发起连接
     }
     @Override public void onScanFailed(int errorCode) { /* 提示用户 */ }
 });
+```
+
+**扫描→选择→连接的完整示例**（单个 Activity 内闭环）：
+
+```java
+public class DeviceSelectActivity extends Activity {
+
+    private GyroBleScanner scanner;
+    private GyroBleManager manager;
+    private final Map<String, BluetoothDevice> found = new HashMap<String, BluetoothDevice>();
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        // ...布局初始化（如一个列表 + 一个"扫描"按钮）...
+
+        scanner = new GyroBleScanner(this);
+        manager = new GyroBleManager(this, gyroCallback); // 见 §4.6 回调实现
+    }
+
+    /** "扫描"按钮点击 */
+    private void onScanClick() {
+        if (!scanner.isBluetoothEnabled()) {
+            // 引导用户打开蓝牙（ACTION_REQUEST_ENABLE）
+            return;
+        }
+        found.clear();
+        scanner.startScan("GYRO-", 10_000, new GyroBleScanner.ScanListener() {
+            @Override
+            public void onDeviceFound(BluetoothDevice device, int rssi, String name) {
+                String address = device.getAddress();        // ← deviceAddress 来源
+                if (!found.containsKey(address)) {
+                    found.put(address, device);
+                    // 刷新列表 UI：显示 name + address + rssi
+                }
+            }
+            @Override
+            public void onScanFailed(int errorCode) { /* 提示用户 */ }
+        });
+    }
+
+    /** 列表中某设备被点击 */
+    private void onDeviceClick(BluetoothDevice device) {
+        scanner.stopScan();                                  // 连接前停止扫描，提高成功率
+        manager.connect(device.getAddress());                // ← 填入 deviceAddress
+    }
+
+    @Override
+    protected void onDestroy() {
+        scanner.stopScan();
+        manager.disconnect();
+        super.onDestroy();
+    }
+}
 ```
 
 ### 4.6 宿主 Activity 完整使用示例
@@ -510,6 +579,9 @@ public class GyroActivity extends Activity {
         // 若实际硬件不是 FFE0/FFE1 透传模块，先替换 UUID：
         // manager.setUuids("0000fff0-...", "0000fff1-...");
 
+        // deviceAddress = 模块 MAC 地址，获取方式见 §4.5：
+        // 扫描回调 device.getAddress()（推荐）/ 已配对列表 / 调试期硬编码。
+        // 若按 §4.5 在同一页面完成扫描选择，直接用所选设备的 getAddress() 即可。
         String deviceAddress = getIntent().getStringExtra("DEVICE_ADDRESS");
         manager.connect(deviceAddress);
     }
