@@ -178,6 +178,48 @@ sequenceDiagram
     Note over UI,DEV: 资源全部释放, 无 Service/GATT 泄漏
 ```
 
+### 1.6 连接成功后的设置纬度操作（单命令完整往返）
+
+参与者按调用链精简为 5 个：宿主 Activity、GyroBleManager、FrameListener、GyroProtocol、Parser。
+蓝牙链路层的收发由 BluetoothLeService 承担，此处以注释带过（细节见 §1.1 / §1.2）。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant UI as 宿主 Activity
+    participant MGR as GyroBleManager
+    participant FL as FrameListener
+    participant PROTO as GyroProtocol
+    participant PARSE as Parser
+
+    Note over UI,PARSE: 前置：BLE 已连接且收到 onServiceReady()，可以下发命令
+
+    UI->>MGR: sendSetLatitude(39.9042)
+    MGR->>MGR: isReady() 检查（已连接且特征值就绪）
+    MGR->>PROTO: buildSetLatitude(39.9042)
+    PROTO->>PROTO: 范围校验（±90°）<br/>lat = round(39.9042 x 1e6) = 39904200
+    PROTO->>PROTO: buildFrame(CMD=0x01, DATA=int32大端)<br/>帧头 + LEN(04) + CMD(01) + DATA + CHK
+    PROTO-->>MGR: 返回帧字节 AA 55 04 01 02 60 E3 C8 12
+    MGR->>MGR: split(9字节, 20)：单包不切分
+    Note over MGR: 入写队列 + startSend()<br/>经 BluetoothLeService 串行发往设备（见 §1.2）
+    MGR-->>UI: return true（发送请求已提交）
+
+    Note over MGR: 设备回 0x7F 通用应答：AA 55 02 7F 01 00 82<br/>经 BluetoothLeService 广播转发到本层（见 §1.4）
+
+    MGR->>PARSE: feed(应答字节流)
+    PARSE->>PARSE: 状态机解析：帧头1→帧头2→LEN(02)→CMD(7F)→DATA(2B)→CHK
+    PARSE->>PARSE: 校验和验证通过
+    PARSE->>FL: onFrame(0x7F, data=[01 00])
+    FL->>PROTO: parseAck(data)
+    PROTO-->>FL: [被应答命令=0x01, 结果码=0x00]
+    FL->>MGR: 请求切换到主线程回调
+    MGR->>UI: onAck(0x01, 0x00)（主线程）
+    UI->>UI: 结果码 0x00 成功 → 推进业务（如 startNorthSeek()）
+```
+
+> 图中字节数与协议定义一致：设置纬度帧 `AA 55 04 01 ...` 中 LEN=04 表示 DATA 为 4 字节；
+> 应答帧 `AA 55 02 7F 01 00 82` 中 LEN=02 表示 DATA 为 2 字节（被应答命令 + 结果码）。
+
 ---
 
 ## 2. 状态图
