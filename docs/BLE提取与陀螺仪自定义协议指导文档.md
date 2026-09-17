@@ -442,7 +442,20 @@ parser.feed(notificationBytes, new GyroProtocol.Parser.FrameListener() {
 | `onAck(cmd, result)` | 收到 0x7F 通用应答 |
 | `onNorthSeekResult(result, headingDeg)` | 收到 0x06 寻北结果 |
 | `onNavData(nav)` | 收到一帧 0x04 导航数据 |
+| `onCommandTimeout(cmd)` | 命令应答超时：重试耗尽仍无 0x7F 应答 |
+| `onNorthSeekTimeout()` | 寻北结果超时：寻北已受理但等待窗口内无 0x06 上报 |
 | `onDisconnected()` / `onError(msg)` | 断开 / 错误 |
+
+**内置超时看门狗**（已在参考实现中落地，对应异常流 F.3 / F.4）：
+
+- **应答超时**：每条期望应答的命令（0x01/0x02/0x03/0x05）发送时启动 2 秒定时器，
+  超时自动重发同一帧，默认最多重试 2 次（共发送 3 次）；重试耗尽仍无应答则回调
+  `onCommandTimeout(cmd)`。收到匹配的 0x7F ACK 即停止定时器。
+- **寻北结果超时**：寻北命令的 ACK（成功）到达后，启动 120 秒看门狗等待 0x06 上报；
+  收到 0x06 即停止，超时回调 `onNorthSeekTimeout()`，业务侧可重新发起寻北或提示用户。
+- **断线自动清理**：收到 `ACTION_GATT_DISCONNECTED` 或调用 `disconnect()` 时，
+  自动取消所有在途命令的看门狗，不会产生"断线后的迟到超时回调"。
+- 参数可配：`setAckTimeoutMs(ms)` / `setMaxAckRetries(n)` / `setSeekResultTimeoutMs(ms)`。
 
 内部已自动完成：绑定服务 → `connectGatt` → 服务发现 → 按配置 UUID 定位特征值 →
 使能通知 → 发送时组帧、分包（默认 20 字节）、串行写队列。
@@ -588,6 +601,16 @@ public class GyroActivity extends Activity {
 
             @Override public void onDisconnected() { toast("连接已断开"); }
             @Override public void onError(String message) { toast(message); }
+
+            @Override public void onCommandTimeout(int cmd) {
+                // 已按配置自动重试仍无应答
+                toast("命令 0x" + Integer.toHexString(cmd) + " 应答超时，请检查设备");
+            }
+
+            @Override public void onNorthSeekTimeout() {
+                toast("寻北超时，请确认设备静止后重试");
+                // 按业务需要决定是否重发：manager.startNorthSeek();
+            }
         });
 
         // 若实际硬件不是 FFE0/FFE1 透传模块，先替换 UUID：
@@ -638,6 +661,12 @@ public class GyroActivity extends Activity {
 - [ ] 退出导航：0x04 帧停止推送
 - [ ] 导航中关闭手机蓝牙 → `onDisconnected` 回调 → 重连后流程可恢复
 - [ ] 页面退出后无 Service 泄漏（`adb shell dumpsys activity services` 检查）
+- [ ] 应答超时：命令发出后断开设备电源（或固件故意不应答）→ 观察日志有自动重发
+      → 重试耗尽收到 `onCommandTimeout(cmd)`；恢复设备后重新发送可正常收到 ACK
+- [ ] 应答去抖：设备迟到的旧应答（如重试后才到达的首帧应答）不会干扰新命令的看门狗
+- [ ] 寻北超时：发出寻北后固件不上报 0x06（可先用 `setSeekResultTimeoutMs(10000)` 缩短窗口验证）
+      → 收到 `onNorthSeekTimeout()`；正常上报 0x06 时看门狗应被取消、不触发超时回调
+- [ ] 断线清理：命令在途时断开链路 → 看门狗被取消，不再产生迟到的超时回调
 
 ---
 

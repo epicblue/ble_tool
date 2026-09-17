@@ -27,8 +27,13 @@ import java.util.UUID;
  * 职责：
  *  - 绑定/解绑 {@link BluetoothLeService}，管理 GATT 连接生命周期；
  *  - 服务发现完成后自动定位目标特征值并使能通知；
- *  - 提供 5 条业务命令的发送入口（设置纬度/寻北/进入导航/退出导航 + 查询）；
- *  - 接收通知数据 → {@link GyroProtocol.Parser} 流式解帧 → 主线程回调。
+ *  - 提供 4 条业务命令的发送入口（设置纬度/寻北/进入导航/退出导航）；
+ *  - 接收通知数据 → {@link GyroProtocol.Parser} 流式解帧 → 主线程回调；
+ *  - **命令超时看门狗**：每条期望应答的命令（0x01/0x02/0x03/0x05）发送时
+ *    启动应答定时器（默认 2s），超时自动重发（默认最多重试 2 次），
+ *    重试耗尽后回调 {@link Callback#onCommandTimeout(int)}；
+ *    寻北命令被受理后另启动寻北结果看门狗（默认 120s）等待 0x06 上报，
+ *    超时回调 {@link Callback#onNorthSeekTimeout()}。
  *
  * 说明：本类全部使用匿名内部类实现回调，未使用 Lambda 表达式，
  * 兼容 Java 7 源码级别的旧工具链，无需额外配置即可编入任何工程。
@@ -41,6 +46,14 @@ public class GyroBleManager {
 
     /** BLE 单包默认载荷（ATT MTU 23 - 3）。协商更大 MTU 后可调大 */
     private static final int DEFAULT_CHUNK_SIZE = 20;
+
+    /* ------------------------- 超时参数默认值 ------------------------- */
+    /** 命令应答(0x7F)超时，毫秒 */
+    private static final long DEFAULT_ACK_TIMEOUT_MS = 2000;
+    /** 应答超时后的最大重试次数（不含首次发送；2 表示最多共发 3 次） */
+    private static final int DEFAULT_MAX_ACK_RETRIES = 2;
+    /** 寻北结果(0x06)上报的等待窗口，毫秒 */
+    private static final long DEFAULT_SEEK_RESULT_TIMEOUT_MS = 120_000;
 
     /* ------------------------------------------------------------------ */
     /* 回调接口（所有回调都在主线程）                                          */
@@ -66,6 +79,18 @@ public class GyroBleManager {
 
         /** 出错（特征值未找到、未连接就发送等） */
         void onError(String message);
+
+        /**
+         * 命令应答超时：已按配置重试仍无应答。
+         * 业务侧可提示用户检查设备，或按状态机决定是否换一步操作。
+         */
+        void onCommandTimeout(int cmd);
+
+        /**
+         * 寻北结果超时：寻北命令已被受理（收到 ACK），但在等待窗口内
+         * 未收到 0x06 上报。业务侧可重新发起寻北或提示用户。
+         */
+        void onNorthSeekTimeout();
     }
 
     /* ------------------------------------------------------------------ */
@@ -87,6 +112,70 @@ public class GyroBleManager {
     private String deviceAddress;
     private int chunkSize = DEFAULT_CHUNK_SIZE;
 
+    /* ------------------------- 超时看门狗状态 ------------------------- */
+    private long ackTimeoutMs = DEFAULT_ACK_TIMEOUT_MS;
+    private int maxAckRetries = DEFAULT_MAX_ACK_RETRIES;
+    private long seekResultTimeoutMs = DEFAULT_SEEK_RESULT_TIMEOUT_MS;
+
+    /** 正在等待应答的命令（-1 表示无） */
+    private int pendingCmd = -1;
+    /** 等待应答命令的完整帧（用于超时重发） */
+    private byte[] pendingFrame;
+    /** 已重试次数 */
+    private int retryCount;
+
+    /** 应答超时任务：重发或上报 onCommandTimeout */
+    private final Runnable ackTimeoutRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (pendingCmd < 0 || pendingFrame == null) {
+                return;
+            }
+            if (!isReady()) {
+                final int cmd = pendingCmd;
+                clearPending();
+                post(new Runnable() {
+                    @Override
+                    public void run() {
+                        callback.onCommandTimeout(cmd);
+                    }
+                });
+                return;
+            }
+            if (retryCount < maxAckRetries) {
+                retryCount++;
+                Log.w(TAG, "ACK timeout, resend cmd=0x" + Integer.toHexString(pendingCmd)
+                        + " retry=" + retryCount);
+                resendPending();
+                scheduleAckTimeout();
+            } else {
+                Log.w(TAG, "ACK timeout, retries exhausted, cmd=0x"
+                        + Integer.toHexString(pendingCmd));
+                final int cmd = pendingCmd;
+                clearPending();
+                post(new Runnable() {
+                    @Override
+                    public void run() {
+                        callback.onCommandTimeout(cmd);
+                    }
+                });
+            }
+        }
+    };
+
+    /** 寻北结果超时任务 */
+    private final Runnable seekTimeoutRunnable = new Runnable() {
+        @Override
+        public void run() {
+            post(new Runnable() {
+                @Override
+                public void run() {
+                    callback.onNorthSeekTimeout();
+                }
+            });
+        }
+    };
+
     public GyroBleManager(Context context, Callback callback) {
         this.appContext = context.getApplicationContext();
         this.callback = callback;
@@ -101,6 +190,21 @@ public class GyroBleManager {
     /** 协商到更大 MTU 后可调大单包长度（= MTU - 3） */
     public void setChunkSize(int chunkSize) {
         this.chunkSize = Math.max(20, chunkSize);
+    }
+
+    /** 设置命令应答超时（毫秒），需在发送命令前配置 */
+    public void setAckTimeoutMs(long ackTimeoutMs) {
+        this.ackTimeoutMs = Math.max(200, ackTimeoutMs);
+    }
+
+    /** 设置应答超时后的最大重试次数（不含首次发送） */
+    public void setMaxAckRetries(int maxAckRetries) {
+        this.maxAckRetries = Math.max(0, maxAckRetries);
+    }
+
+    /** 设置寻北结果等待窗口（毫秒）；联调时可临时调小以便快速验证 */
+    public void setSeekResultTimeoutMs(long seekResultTimeoutMs) {
+        this.seekResultTimeoutMs = Math.max(1000, seekResultTimeoutMs);
     }
 
     /* ------------------------------------------------------------------ */
@@ -122,6 +226,7 @@ public class GyroBleManager {
 
     /** 断开并释放所有资源（页面退出时务必调用） */
     public void disconnect() {
+        cancelAllWatchdogs();
         unregisterReceiverIfNeeded();
         if (bleService != null) {
             bleService.disconnect();
@@ -181,6 +286,7 @@ public class GyroBleManager {
             } else if (BluetoothLeService.ACTION_GATT_DISCONNECTED.equals(action)) {
                 targetChar = null;
                 parser.reset();
+                cancelAllWatchdogs(); // 链路已断，未决命令不可能再有应答
                 post(new Runnable() {
                     @Override
                     public void run() {
@@ -276,6 +382,7 @@ public class GyroBleManager {
                     if (cmd == GyroProtocol.CMD_ACK) {
                         final int[] ack = GyroProtocol.parseAck(data);
                         if (ack != null) {
+                            handleAck(ack[0], ack[1]);
                             post(new Runnable() {
                                 @Override
                                 public void run() {
@@ -294,6 +401,8 @@ public class GyroBleManager {
                             });
                         }
                     } else if (cmd == GyroProtocol.CMD_NORTH_SEEK_RESULT) {
+                        // 收到寻北结果，停止寻北结果看门狗
+                        mainHandler.removeCallbacks(seekTimeoutRunnable);
                         final int[] r = GyroProtocol.parseNorthSeekResult(data);
                         if (r != null) {
                             post(new Runnable() {
@@ -309,43 +418,102 @@ public class GyroBleManager {
                 }
             };
 
+    /** 应答到达：与在途命令对账，命中则停止超时看门狗 */
+    private void handleAck(int ackedCmd, int result) {
+        if (pendingCmd != ackedCmd) {
+            Log.w(TAG, "ACK for unexpected cmd=0x" + Integer.toHexString(ackedCmd));
+            return;
+        }
+        clearPending();
+        // 寻北被受理（ACK 成功）后，启动寻北结果看门狗等待 0x06
+        if (ackedCmd == (GyroProtocol.CMD_START_NORTH_SEEK & 0xFF)
+                && result == GyroProtocol.RESULT_OK) {
+            mainHandler.removeCallbacks(seekTimeoutRunnable);
+            mainHandler.postDelayed(seekTimeoutRunnable, seekResultTimeoutMs);
+        }
+    }
+
     /* ------------------------------------------------------------------ */
     /* 对外业务命令                                                          */
     /* ------------------------------------------------------------------ */
 
     /** 0x01 设置纬度（度，北纬为正、南纬为负，范围 ±90） */
     public boolean sendSetLatitude(double latitudeDeg) {
-        return sendFrame(GyroProtocol.buildSetLatitude(latitudeDeg));
+        return sendCommand(GyroProtocol.CMD_SET_LATITUDE,
+                GyroProtocol.buildSetLatitude(latitudeDeg));
     }
 
     /** 0x02 寻北 */
     public boolean startNorthSeek() {
-        return sendFrame(GyroProtocol.buildStartNorthSeek());
+        return sendCommand(GyroProtocol.CMD_START_NORTH_SEEK,
+                GyroProtocol.buildStartNorthSeek());
     }
 
     /** 0x03 进入导航（设备开始连续推送导航数据） */
     public boolean enterNavigation() {
-        return sendFrame(GyroProtocol.buildEnterNavigation());
+        return sendCommand(GyroProtocol.CMD_ENTER_NAVIGATION,
+                GyroProtocol.buildEnterNavigation());
     }
 
     /** 0x05 退出导航（设备停止推送） */
     public boolean exitNavigation() {
-        return sendFrame(GyroProtocol.buildExitNavigation());
+        return sendCommand(GyroProtocol.CMD_EXIT_NAVIGATION,
+                GyroProtocol.buildExitNavigation());
     }
 
     /* ------------------------------------------------------------------ */
-    /* 发送：组帧 → 分包 → 写队列 → 启动发送线程                              */
+    /* 发送：组帧 → 分包 → 写队列 → 启动发送线程 → 启动应答看门狗              */
     /* ------------------------------------------------------------------ */
-    private boolean sendFrame(byte[] frame) {
+
+    /**
+     * 发送一条期望 0x7F 应答的命令，并启动应答超时看门狗。
+     * 同一时刻只允许一条在途命令（与业务状态机一致），后发命令会取代前一条的看门狗。
+     */
+    private boolean sendCommand(byte cmd, byte[] frame) {
         if (!isReady()) {
             postError("连接未就绪，无法发送: " + GyroProtocol.toHex(frame));
             return false;
         }
+        pendingCmd = cmd & 0xFF;
+        pendingFrame = frame;
+        retryCount = 0;
+        enqueueAndSend(frame);
+        scheduleAckTimeout();
+        return true;
+    }
+
+    /** 超时重发（帧字节与首次完全相同） */
+    private void resendPending() {
+        if (pendingFrame == null) {
+            return;
+        }
+        enqueueAndSend(pendingFrame);
+    }
+
+    private void enqueueAndSend(byte[] frame) {
         for (byte[] chunk : split(frame, chunkSize)) {
             bleService.writeCharacteristic(chunk);
         }
         bleService.startSend(targetChar);
-        return true;
+    }
+
+    private void scheduleAckTimeout() {
+        mainHandler.removeCallbacks(ackTimeoutRunnable);
+        mainHandler.postDelayed(ackTimeoutRunnable, ackTimeoutMs);
+    }
+
+    /** 清除在途命令状态并取消应答看门狗 */
+    private void clearPending() {
+        mainHandler.removeCallbacks(ackTimeoutRunnable);
+        pendingCmd = -1;
+        pendingFrame = null;
+        retryCount = 0;
+    }
+
+    /** 取消全部看门狗（断开连接时调用） */
+    private void cancelAllWatchdogs() {
+        clearPending();
+        mainHandler.removeCallbacks(seekTimeoutRunnable);
     }
 
     /** 按 BLE 单包长度切分（协议帧 ≤ 13 字节时默认不会触发切分） */
