@@ -293,6 +293,149 @@ sequenceDiagram
 > CHK = 03+06+00+2F+DA = 0x12，与协议定义一致。
 > 结果码非 0x00 的失败分支（超时/被中断/硬件故障）见异常流 F.4（前卷 §3.4）。
 
+### 1.8 连接成功后的启动导航操作（进入导航 + 连续数据接收）
+
+参与者 7 个，与 §1.7 相同；本图为各参与者的处理时段绘制了**激活条**（竖条）。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant UI as 宿主 Activity
+    participant MGR as GyroBleManager
+    participant FL as FrameListener
+    participant PROTO as GyroProtocol
+    participant PARSE as Parser
+    participant BR as BroadcastReceiver
+    participant SVC as BluetoothLeService
+
+    Note over UI,SVC: 前置：寻北完成（状态：寻北完成），可进入导航
+
+    rect rgb(255, 248, 231)
+    Note over UI,SVC: 阶段① 下发进入导航命令（0x03）
+    UI->>+MGR: enterNavigation()
+    MGR->>MGR: isReady() 检查（已连接且特征值就绪）
+    MGR->>+PROTO: buildEnterNavigation()
+    PROTO->>PROTO: buildFrame(CMD=0x03, DATA空)<br/>帧头 + LEN(00) + CMD(03) + CHK
+    PROTO-->>-MGR: 帧字节 AA 55 00 03 03
+    MGR->>MGR: split(5字节, 20)：单包不切分
+    MGR->>+SVC: writeCharacteristic(chunk) 入写队列
+    SVC-->>-MGR: （入队完成）
+    MGR->>+SVC: startSend(targetChar)
+    SVC->>SVC: 启动发送线程（防重入），串行写向设备
+    SVC-->>-MGR: （发送线程已启动）
+    MGR-->>-UI: return true（发送请求已提交）
+    end
+
+    rect rgb(232, 250, 236)
+    Note over UI,SVC: 阶段② 接收设备 ACK（0x7F）
+    Note over SVC: 设备确认：AA 55 02 7F 03 00 84<br/>（被应答命令 0x03，结果码 0x00）
+    activate SVC
+    SVC->>SVC: onCharacteristicChanged(ACK 帧)
+    SVC--)+BR: 广播 ACTION_DATA_AVAILABLE<br/>EXTRA_BYTE_DATA = ACK 字节
+    deactivate SVC
+    BR->>+MGR: onReceive() 取出字节数组
+    MGR->>+PARSE: feed(ACK 字节流)
+    PARSE->>PARSE: 状态机：帧头1→帧头2→LEN(02)→CMD(7F)→DATA→CHK 校验
+    PARSE->>+FL: onFrame(0x7F, data=[03 00])
+    FL->>+PROTO: parseAck(data)
+    PROTO-->>-FL: [被应答命令=0x03, 结果码=0x00]
+    FL-->>-PARSE: （分发完成，请求切主线程）
+    PARSE-->>-MGR: feed 返回
+    MGR-->>-BR: onReceive 返回
+    MGR->>+UI: onAck(0x03, 0x00) 主线程回调
+    UI->>UI: 状态更新为"导航中"，准备显示姿态数据
+    deactivate UI
+    end
+
+    rect rgb(232, 240, 254)
+    Note over UI,SVC: 阶段③ 连续接收导航数据（0x04，图中展示一次迭代）
+    loop 每 20~100ms 推送一次（10~50Hz）
+        Note over SVC: 设备推送一帧：AA 55 08 04 30 39 FE 0C 00 FA 03 07 83
+        activate SVC
+        SVC->>SVC: onCharacteristicChanged(0x04 帧)
+        SVC--)+BR: 广播 ACTION_DATA_AVAILABLE
+        deactivate SVC
+        BR->>+MGR: onReceive() 取出字节数组
+        MGR->>+PARSE: feed(导航数据字节流)
+        PARSE->>PARSE: 状态机解帧 + 校验和验证
+        PARSE->>+FL: onFrame(0x04, data=[30 39 FE 0C 00 FA 03 07])
+        FL->>+PROTO: parseNavData(data)
+        PROTO-->>-FL: NavData（航向123.45° 俯仰-5.00° 横滚2.50° 序号0x07）
+        FL-->>-PARSE: （分发完成，请求切主线程）
+        PARSE-->>-MGR: feed 返回
+        MGR-->>-BR: onReceive 返回
+        MGR->>+UI: onNavData(nav) 主线程回调
+        UI->>UI: 刷新航向 / 俯仰 / 横滚显示
+        deactivate UI
+    end
+    end
+```
+
+> 帧字节核对：进入导航命令帧无 DATA→LEN=00，CHK=0x03；ACK 帧 CHK = 02+7F+03+00 = 0x84；
+> 导航数据帧 LEN=08（航向 2B + 俯仰 2B + 横滚 2B + 状态 1B + 序号 1B），与协议定义一致。
+> 高频接收路径（阶段③）的激活条表明：每帧数据会贯穿 SVC→BR→MGR→PARSE→FL→PROTO 全链路，
+> 各对象处理完立即释放（竖条结束），无跨帧阻塞。
+
+### 1.9 停止导航操作（退出导航）
+
+参与者 7 个，同上；同样绘制激活条。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant UI as 宿主 Activity
+    participant MGR as GyroBleManager
+    participant FL as FrameListener
+    participant PROTO as GyroProtocol
+    participant PARSE as Parser
+    participant BR as BroadcastReceiver
+    participant SVC as BluetoothLeService
+
+    Note over UI,SVC: 前置：导航中，正持续接收 0x04 数据（状态：导航中）
+
+    rect rgb(253, 236, 236)
+    Note over UI,SVC: 阶段① 下发退出导航命令（0x05）
+    UI->>+MGR: exitNavigation()
+    MGR->>MGR: isReady() 检查（已连接且特征值就绪）
+    MGR->>+PROTO: buildExitNavigation()
+    PROTO->>PROTO: buildFrame(CMD=0x05, DATA空)<br/>帧头 + LEN(00) + CMD(05) + CHK
+    PROTO-->>-MGR: 帧字节 AA 55 00 05 05
+    MGR->>MGR: split(5字节, 20)：单包不切分
+    MGR->>+SVC: writeCharacteristic(chunk) 入写队列
+    SVC-->>-MGR: （入队完成）
+    MGR->>+SVC: startSend(targetChar)
+    SVC->>SVC: 串行写向设备
+    SVC-->>-MGR: （发送线程已启动）
+    MGR-->>-UI: return true（发送请求已提交）
+    end
+
+    rect rgb(232, 250, 236)
+    Note over UI,SVC: 阶段② 接收设备 ACK（0x7F）
+    Note over SVC: 设备确认：AA 55 02 7F 05 00 86<br/>（被应答命令 0x05，结果码 0x00）
+    activate SVC
+    SVC->>SVC: onCharacteristicChanged(ACK 帧)
+    SVC--)+BR: 广播 ACTION_DATA_AVAILABLE<br/>EXTRA_BYTE_DATA = ACK 字节
+    deactivate SVC
+    BR->>+MGR: onReceive() 取出字节数组
+    MGR->>+PARSE: feed(ACK 字节流)
+    PARSE->>PARSE: 状态机解帧 + 校验和验证
+    PARSE->>+FL: onFrame(0x7F, data=[05 00])
+    FL->>+PROTO: parseAck(data)
+    PROTO-->>-FL: [被应答命令=0x05, 结果码=0x00]
+    FL-->>-PARSE: （分发完成，请求切主线程）
+    PARSE-->>-MGR: feed 返回
+    MGR-->>-BR: onReceive 返回
+    MGR->>+UI: onAck(0x05, 0x00) 主线程回调
+    UI->>UI: 状态更新为"就绪"，停止姿态显示刷新
+    deactivate UI
+    end
+
+    Note over SVC: 设备收到 0x05 后停止推送 0x04；若仍有零星数据帧到达，<br/>Parser 照常解帧，宿主按当前状态丢弃即可（幂等处理）
+```
+
+> 帧字节核对：退出导航命令帧无 DATA→LEN=00，CHK=0x05；ACK 帧 CHK = 02+7F+05+00 = 0x86。
+> 退出后业务状态机回到"就绪"（见状态图 ST.1 的 导航中→就绪 迁移）。
+
 ---
 
 ## 2. 状态图
