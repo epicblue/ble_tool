@@ -220,6 +220,79 @@ sequenceDiagram
 > 图中字节数与协议定义一致：设置纬度帧 `AA 55 04 01 ...` 中 LEN=04 表示 DATA 为 4 字节；
 > 应答帧 `AA 55 02 7F 01 00 82` 中 LEN=02 表示 DATA 为 2 字节（被应答命令 + 结果码）。
 
+### 1.7 连接成功后的寻北操作（命令应答 + 异步结果上报）
+
+参与者共 7 个：宿主 Activity、GyroBleManager、FrameListener、GyroProtocol、Parser、
+BroadcastReceiver、BluetoothLeService。与 §1.6 相比，本图展开了"通知 → 广播 → 接收器 → 解帧"
+的完整接收链路。设备不在参与者之列，链路收发以注释表示。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant UI as 宿主 Activity
+    participant MGR as GyroBleManager
+    participant FL as FrameListener
+    participant PROTO as GyroProtocol
+    participant PARSE as Parser
+    participant BR as BroadcastReceiver
+    participant SVC as BluetoothLeService
+
+    Note over UI,SVC: 前置：已连接且 onServiceReady() 已回调，纬度已设置（状态：已设纬度）
+
+    rect rgb(255, 248, 231)
+    Note over UI,SVC: 阶段① 寻北命令下发与 ACK
+    UI->>MGR: startNorthSeek()
+    MGR->>MGR: isReady() 检查（已连接且特征值就绪）
+    MGR->>PROTO: buildStartNorthSeek()
+    PROTO->>PROTO: buildFrame(CMD=0x02, DATA空)<br/>帧头 + LEN(00) + CMD(02) + CHK
+    PROTO-->>MGR: 返回帧字节 AA 55 00 02 02
+    MGR->>MGR: split(5字节, 20)：单包不切分
+    MGR->>SVC: writeCharacteristic(chunk) 入写队列
+    MGR->>SVC: startSend(targetChar) 启动发送线程
+    SVC->>SVC: 串行写：等上一包写回调 → writeCharacteristic
+    Note over SVC: 帧经 BLE 链路写入设备；设备立即以 0x7F ACK 回应
+    MGR-->>UI: return true（发送请求已提交）
+    Note over SVC: 设备 ACK 通知到达：AA 55 02 7F 02 00 83<br/>（被应答命令 0x02，结果码 0x00）
+    SVC->>SVC: onCharacteristicChanged(ACK 帧)
+    SVC--)BR: 广播 ACTION_DATA_AVAILABLE<br/>EXTRA_BYTE_DATA = ACK 字节
+    BR->>MGR: onReceive() 取出字节
+    MGR->>PARSE: feed(ACK 字节流)
+    PARSE->>PARSE: 状态机：帧头1→帧头2→LEN(02)→CMD(7F)→DATA→CHK 校验
+    PARSE->>FL: onFrame(0x7F, data=[02 00])
+    FL->>PROTO: parseAck(data)
+    PROTO-->>FL: [被应答命令=0x02, 结果码=0x00]
+    FL->>MGR: 请求切换到主线程回调
+    MGR->>UI: onAck(0x02, 0x00)（主线程）
+    UI->>UI: 提示"寻北已开始，请保持设备静止"
+    end
+
+    rect rgb(238, 240, 252)
+    Note over UI,SVC: 阶段② 设备侧寻北解算（数十秒量级）
+    Note over SVC: 设备进行寻北解算，主机状态保持"寻北中"<br/>期间不重发 0x02（固件对重复命令回 0x02 状态错误）
+    end
+
+    rect rgb(232, 250, 236)
+    Note over UI,SVC: 阶段③ 寻北结果上报（异步）
+    Note over SVC: 解算完成，设备上报 0x06：AA 55 03 06 00 2F DA 12<br/>（结果码 0x00，方位角 122.50°）
+    SVC->>SVC: onCharacteristicChanged(0x06 帧)
+    SVC--)BR: 广播 ACTION_DATA_AVAILABLE<br/>EXTRA_BYTE_DATA = 0x06 帧字节
+    BR->>MGR: onReceive() 取出字节
+    MGR->>PARSE: feed(结果字节流)
+    PARSE->>PARSE: 状态机解析 + 校验和验证
+    PARSE->>FL: onFrame(0x06, data=[00 2F DA])
+    FL->>PROTO: parseNorthSeekResult(data)
+    PROTO-->>FL: [结果码=0x00, 方位角x100=12250]
+    FL->>MGR: 请求切换到主线程回调
+    MGR->>UI: onNorthSeekResult(0x00, 122.50)（主线程）
+    UI->>UI: 业务决策：enterNavigation() 进入导航
+    end
+```
+
+> 帧字节核对：ACK 帧 LEN=02（DATA = 被应答命令 + 结果码，2 字节），
+> CHK = 02+7F+02+00 = 0x83；寻北结果帧 LEN=03（结果码 1 字节 + 方位角 2 字节），
+> CHK = 03+06+00+2F+DA = 0x12，与协议定义一致。
+> 结果码非 0x00 的失败分支（超时/被中断/硬件故障）见异常流 F.4（前卷 §3.4）。
+
 ---
 
 ## 2. 状态图
