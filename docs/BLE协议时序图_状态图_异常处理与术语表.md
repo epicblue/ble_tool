@@ -446,6 +446,90 @@ sequenceDiagram
 > 阶段①发送 0x05 时同步启动 2s 应答看门狗：超时自动重发，重试耗尽回调
 > `onCommandTimeout(0x05)`（见异常流 F.3）。
 
+### 1.10 寻北操作——超时分支（ACK 超时 + 寻北结果超时）
+
+参与者 7 个，与 §1.7 相同；绘制激活条。两条互斥的超时路径放在同一张图中：
+**分支 A** 为命令应答超时（设备不响应 0x02），**分支 B** 为应答正常但寻北结果（0x06）超时。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant UI as 宿主 Activity
+    participant MGR as GyroBleManager
+    participant FL as FrameListener
+    participant PROTO as GyroProtocol
+    participant PARSE as Parser
+    participant BR as BroadcastReceiver
+    participant SVC as BluetoothLeService
+
+    Note over UI,SVC: 前置：纬度已设置（状态：已设纬度）；本图描述设备异常/无响应时的路径
+
+    UI->>+MGR: startNorthSeek()
+    MGR->>MGR: isReady() 检查
+    MGR->>+PROTO: buildStartNorthSeek()
+    PROTO-->>-MGR: 帧字节 AA 55 00 02 02
+    MGR->>+SVC: writeCharacteristic 入队 + startSend
+    SVC-->>-MGR: （入队并启动发送线程）
+    MGR->>MGR: 启动 2s 应答看门狗<br/>pendingCmd=0x02, retryCount=0
+    MGR-->>-UI: return true
+
+    alt 分支A：应答超时（设备无响应）
+        Note over MGR: 2s 内未收到 0x7F（设备断电/超距/固件挂起）
+        MGR->>+MGR: ackTimeoutRunnable 触发
+        MGR->>MGR: retryCount(0) < 上限(2) → retryCount=1
+        MGR->>+SVC: 重发同一帧 AA 55 00 02 02
+        SVC-->>-MGR: （发送完成）
+        MGR->>MGR: 重启 2s 看门狗
+        deactivate MGR
+        Note over MGR: 再等 2s 仍无响应
+        MGR->>+MGR: ackTimeoutRunnable 再次触发
+        MGR->>MGR: retryCount(1) < 上限(2) → retryCount=2
+        MGR->>+SVC: 重发同一帧 AA 55 00 02 02
+        SVC-->>-MGR: （发送完成）
+        MGR->>MGR: 重启 2s 看门狗
+        deactivate MGR
+        Note over MGR: 又等 2s 仍无响应
+        MGR->>+MGR: ackTimeoutRunnable 触发
+        MGR->>MGR: retryCount(2) = 上限 → 重试耗尽，clearPending()
+        MGR->>+UI: onCommandTimeout(0x02) 主线程
+        UI->>UI: 提示寻北失败：检查设备供电/距离后重试
+        deactivate UI
+        deactivate MGR
+    else 分支B：应答正常，但寻北结果超时（无 0x06）
+        Note over SVC: 设备 ACK 到达：AA 55 02 7F 02 00 83
+        activate SVC
+        SVC->>SVC: onCharacteristicChanged(ACK 帧)
+        SVC--)+BR: 广播 ACTION_DATA_AVAILABLE
+        deactivate SVC
+        BR->>+MGR: onReceive() 取出字节数组
+        MGR->>+PARSE: feed(ACK 字节流)
+        PARSE->>+FL: onFrame(0x7F, data=[02 00])
+        FL->>+PROTO: parseAck(data)
+        PROTO-->>-FL: [被应答命令=0x02, 结果码=0x00]
+        FL-->>-PARSE: （分发完成）
+        PARSE-->>-MGR: feed 返回
+        MGR->>MGR: handleAck：取消应答看门狗，<br/>启动 120s 寻北结果看门狗
+        MGR-->>-BR: onReceive 返回
+        MGR->>+UI: onAck(0x02, 0x00) 主线程
+        UI->>UI: 提示"寻北已开始，请保持设备静止"
+        deactivate UI
+        Note over MGR: 120s 内始终未收到 0x06 上报<br/>（设备解算卡死/中途断电等）
+        MGR->>+MGR: seekTimeoutRunnable 触发
+        MGR->>+UI: onNorthSeekTimeout() 主线程
+        UI->>UI: 业务决策：重新发起寻北 startNorthSeek()<br/>或提示用户检查设备
+        deactivate UI
+        deactivate MGR
+    end
+```
+
+> 与参考实现 `GyroBleManager` 的对应关系：
+> 分支 A = `ackTimeoutRunnable`（2s × 最多 2 次重试 → `onCommandTimeout`）；
+> 分支 B = 寻北 ACK 受理后 `handleAck` 启动的 `seekTimeoutRunnable`（120s → `onNorthSeekTimeout`），
+> 正常收到 0x06 时该看门狗会被取消（见 §1.7 阶段③）。参数可通过
+> `setAckTimeoutMs / setMaxAckRetries / setSeekResultTimeoutMs` 调整。
+> 超时后的状态机位置：分支 A 停留在"已设纬度"，分支 B 停留在"寻北中"，
+> 两者均可直接重新发起寻北（见状态图 ST.1 与异常流 F.3 / F.4）。
+
 ---
 
 ## 2. 状态图
