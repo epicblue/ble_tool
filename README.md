@@ -24,7 +24,8 @@
 - **历史记录**：按动作筛选、缩略图、成绩、删除
 - **账号切换**：多人共用一台手机时，训练数据彼此隔离
 
-功能说明、判定阈值、数据格式与已知限制详见 **[docs/fitness-module.md](docs/fitness-module.md)**。
+功能说明、判定阈值、数据格式与已知限制详见 **[docs/fitness-module.md](docs/fitness-module.md)**；
+后续版本计划见 **[ROADMAP.md](ROADMAP.md)**。
 
 ## 构建
 
