@@ -137,15 +137,69 @@ com.zxw.fitness
 
 ## 7. 构建要求
 
-- Android Studio Flamingo（2022.2）或更新；**JDK 11+**（AGP 7.4.2 / Gradle 7.6.4）。
-- `compileSdk 33`、`minSdk 21`、`targetSdk 33`。
-- 首次构建会从 Maven 下载 CameraX 1.1.0 与 ML Kit Pose Detection（模型随 AAR 打包，
-  没有运行时下载，但 APK 体积会增加约 20 MB）。
+| 项目 | 版本 |
+| --- | --- |
+| Android Studio | Hedgehog (2023.1) 或更新（AGP 8.7 需要） |
+| Gradle | 8.10.2（wrapper 已指定） |
+| Android Gradle Plugin | 8.7.3 |
+| **JDK** | **17 或 21**（必须；JDK 8 / 11 会直接报错） |
+| compileSdk / targetSdk | 34（需安装 SDK Platform 34 + Build-Tools 34.0.0） |
+| minSdk | 21 |
+
+首次构建会从 Maven 下载 CameraX 1.1.0 与 ML Kit Pose Detection（模型随 AAR 打包，
+没有运行时下载，但 APK 体积会增加约 20 MB）。
 
 ```bash
-./gradlew :app:assembleDebug          # 打 debug 包
-./gradlew :app:testDebugUnitTest      # 运行动作判定单元测试（纯 JVM，无需真机）
+# Windows
+gradlew.bat :app:testDebugUnitTest    # 先跑动作判定单元测试（纯 JVM，不需要手机）
+gradlew.bat :app:assembleDebug        # 再打 debug 包
+
+# macOS / Linux
+./gradlew :app:testDebugUnitTest
+./gradlew :app:assembleDebug
 ```
+
+### 7.1 常见构建错误
+
+**① `No matching variant of com.android.tools.build:gradle:...`**
+Gradle 跑在 JDK 8（或 11）上，而 AGP 需要 JDK 17+。`settings.gradle` 已经内置了自检，
+会直接打印中文修复步骤。修复方式：
+
+- Android Studio：`Settings → Build, Execution, Deployment → Build Tools → Gradle`
+  → **Gradle JDK** 选 `jbr-17`（Studio 自带）或本地 JDK 17 → Sync。
+- 命令行（Windows）：
+  ```bat
+  set JAVA_HOME=C:\Program Files\Android\Android Studio\jbr
+  gradlew.bat clean assembleDebug
+  ```
+- 只对本次生效：`gradlew.bat -Dorg.gradle.java.home="C:\Program Files\Android\Android Studio\jbr" clean assembleDebug`
+- 永久生效（本机配置，勿提交）：在 `%USERPROFILE%\.gradle\gradle.properties`
+  加 `org.gradle.java.home=C:\\Program Files\\Android\\Android Studio\\jbr`
+
+**② `Unsupported class file major version 6x`**
+JDK 太新（Gradle 8.10 最高支持 JDK 23）。切回 JDK 17 或 21。
+
+**③ `Failed to find target with hash string 'android-34'`**
+SDK Platform 34 没装：`Tools → SDK Manager → Android 34`，勾选 *SDK Platform* 与
+*Android SDK Build-Tools 34*。
+
+**④ `Plugin [id: 'com.android.application'] was not found`**
+第一次同步时网络没连上 `google()` / `mavenCentral()`；挂上代理后
+`File → Invalidate Caches / Restart` 再同步。
+
+**⑤ 打开工程时提示 AGP 版本不兼容**
+说明 Android Studio 太旧（低于 Hedgehog）。升级 Studio，或改回 AGP 7.4.2 + Gradle 7.6.4 +
+JDK 17 这一组合（JDK 依旧是 17，不要用 8/11）。
+
+**⑥ 提示 `Could not install Gradle distribution` / wrapper 版本过旧**
+仓库里的 `gradle-wrapper.jar` 是 2019 年的老文件，正常情况下仍能下载 8.10.2；若报错，
+重新生成 wrapper（会同时更新 jar）：
+
+```bash
+gradlew.bat wrapper --gradle-version 8.10.2 --distribution-type bin
+```
+
+或者用 Android Studio 打开工程后点 `Sync`，让它自动补齐 wrapper。
 
 单元测试（`app/src/test/java/com/zxw/fitness/PoseAnalyzerTest.java`）用合成关键点验证：
 标准俯卧撑计数、幅度不足/塌腰/跪姿的识别、站立不误计数、抖动过滤、倒立计时与倾斜拒绝、

@@ -2,11 +2,12 @@ apply plugin: 'com.android.application'
 
 android {
     namespace 'com.zxw'
-    compileSdkVersion 33
+    compileSdk 34
+
     defaultConfig {
         applicationId "com.zxw"
-        minSdkVersion 21
-        targetSdkVersion 33
+        minSdk 21
+        targetSdk 34
         versionCode 2
         versionName "1.1"
         multiDexEnabled true
@@ -21,10 +22,12 @@ android {
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
+        // 源码里有中文提示文案，固定 UTF-8 避免 Windows 默认编码导致乱码
+        encoding = 'UTF-8'
     }
-    aaptOptions {
+    androidResources {
         // ML Kit 自带的模型文件已是压缩格式，跳过二次压缩可以加快打包与首次加载
-        noCompress "tflite"
+        noCompress 'tflite'
     }
 }
 

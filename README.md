@@ -29,13 +29,24 @@
 ## 构建
 
 ```bash
-./gradlew :app:assembleDebug          # 编译 APK
-./gradlew :app:testDebugUnitTest      # 动作判定单元测试（纯 JVM）
+# Windows
+gradlew.bat :app:testDebugUnitTest    # 动作判定单元测试（纯 JVM，无需手机）
+gradlew.bat :app:assembleDebug        # 编译 APK
+
+# macOS / Linux
+./gradlew :app:testDebugUnitTest
+./gradlew :app:assembleDebug
 ```
 
-- Android Studio Flamingo+ / JDK 11+
-- AGP 7.4.2、Gradle 7.6.4、compileSdk 33、minSdk 21
+- **Android Studio Hedgehog (2023.1)+，Gradle JDK 必须是 17 或 21**
+  （Settings → Build Tools → Gradle → Gradle JDK → 选 `jbr-17`）
+- AGP 8.7.3、Gradle 8.10.2、compileSdk 34、targetSdk 34、minSdk 21
+- 需要 SDK Platform 34 + Build-Tools 34.0.0（Studio 会提示自动安装）
 - 依赖：CameraX 1.1.0、ML Kit Pose Detection 18.0.0（离线模型，画面不上传）
+
+> 遇到 `No matching variant of com.android.tools.build:gradle` 这类报错，基本都是
+> **Gradle 用的 JDK 版本不对**（JDK 8/11 不行，需要 17/21）。
+> 逐步排查见 [docs/fitness-module.md 第 7.1 节](docs/fitness-module.md#71-常见构建错误)。
 
 ## 目录
 
