@@ -23,6 +23,19 @@ public final class PoseMath {
         return (f.getY(a) + f.getY(b)) / 2f;
     }
 
+    /** 仅对可信关键点求中点；单侧被遮挡时使用可见的一侧。 */
+    public static float reliableMidY(PoseFrame f, int left, int right) {
+        boolean l = isReliable(f, left);
+        boolean r = isReliable(f, right);
+        if (l && r) {
+            float lc = f.getConfidence(left), rc = f.getConfidence(right);
+            if (Math.abs(lc - rc) > CONFIDENCE_GAP) return lc > rc ? f.getY(left) : f.getY(right);
+            return (f.getY(left) * lc + f.getY(right) * rc) / (lc + rc);
+        }
+        if (l) return f.getY(left);
+        return r ? f.getY(right) : Float.NaN;
+    }
+
     public static float distance(float x1, float y1, float x2, float y2) {
         float dx = x2 - x1;
         float dy = y2 - y1;

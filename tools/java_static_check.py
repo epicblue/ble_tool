@@ -1,12 +1,12 @@
 """在没有 JDK / Android SDK 的环境里做"找不到符号"级别的静态自查。
 
-覆盖四类常见的 Java 编译错误：
+覆盖部分常见的 Java 编译错误：
 
 1. **未限定的方法调用**（`foo(...)`）在本类 / 父类 / 接口 / 外层类 / 静态导入里不存在；
 2. **未限定的变量**（字段、枚举常量）不存在；
 3. **静态访问写错**（`ExerciseType.WALL_SITX`、`Session.getResultTextX()`）——
    只要前缀是本仓库的类，就检查成员是否存在；
-4. **参数个数对不上**（重载全都匹配不上、也不是可变参数）；
+4. **方法/本仓库构造器参数个数对不上**（重载全都匹配不上、也不是可变参数）；
 5. `import com.zxw...` 指向本仓库里不存在的类型。
 
 保守策略：如果某类的父类/接口或静态导入来自本仓库之外（Android SDK、JUnit 等），
@@ -137,6 +137,8 @@ def collect_class_body(cls):
         methods.setdefault(m.name, []).append(count)
     for c in cls.constructors:
         methods.setdefault(c.name, []).append(len(c.parameters or []))
+        if (c.parameters or []) and c.parameters[-1].varargs:
+            varargs.add(c.name)
     field_types = {}
     for f in cls.fields:
         tname = '' if getattr(f.type, 'dimensions', None) else simple_name(getattr(f.type, 'name', ''))
@@ -247,6 +249,29 @@ def arity_ok(counts, varargs, argc):
     return any(argc == c for c in counts)
 
 
+def check_constructors(path, tree, by_qualified, by_simple):
+    """只检查能唯一定位到本仓库类型的 new 调用；不推断参数类型或可见性。"""
+    problems, checked = [], 0
+    for call in iter_nodes(tree, jt.ClassCreator, skip_nested=False):
+        ref, names = call.type, []
+        while ref is not None:
+            names.append(ref.name)
+            ref = getattr(ref, 'sub_type', None)
+        owner = by_qualified.get('.'.join(names))
+        if owner is None and len(by_simple.get(names[-1], [])) == 1:
+            owner = by_simple[names[-1]][0]
+        if owner is None:
+            continue
+        checked += 1
+        argc = len(call.arguments or [])
+        # 无显式构造器时 Java 提供无参默认构造器。
+        counts = owner.methods.get(owner.name, [0])
+        if not arity_ok(counts, owner.name in owner.varargs, argc):
+            problems.append((path, call.position, owner.name,
+                             f'new {owner.qualified_name()}(...) 参数个数 {argc} 不匹配'))
+    return problems, checked
+
+
 def main():
     files = sorted(glob.glob(ROOT + '/**/*.java', recursive=True))
     trees, all_classes = {}, []
@@ -260,10 +285,18 @@ def main():
         if c.enclosing is None:
             by_name[c.name] = c
     by_qualified = {c.qualified_name(): c for c in all_classes}
+    by_simple = {}
+    for c in all_classes:
+        by_simple.setdefault(c.name, []).append(c)
     type_names = {c.name for c in all_classes}
 
     repo_static, external_static = {}, set()
     problems = []
+    checked_constructors = 0
+    for path, tree in trees.items():
+        bad, count = check_constructors(path, tree, by_qualified, by_simple)
+        problems.extend(bad)
+        checked_constructors += count
 
     for path, tree in trees.items():
         names = set()
@@ -409,7 +442,8 @@ def main():
         line = pos.line if pos else '?'
         print(f'{path}:{line}: {cls}: 找不到符号 {name}')
 
-    print(f'\n检查 {len(files)} 个文件，{len(all_classes)} 个类型，问题 {len(problems)} 处')
+    print(f'\n检查 {len(files)} 个文件，{len(all_classes)} 个类型，'
+          f'{checked_constructors} 个本仓库构造调用，问题 {len(problems)} 处')
     return 1 if problems else 0
 
 

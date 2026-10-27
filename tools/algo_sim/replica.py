@@ -52,6 +52,63 @@ def frame(ts, pts):
     return F(full, ts)
 
 
+def mask_out_of_frame(f, width, height):
+    """模拟相机帧进入判定前的画面边界校验（x/y 同除以画面宽）。"""
+    if width <= 0 or height <= 0: return frame(f.ts, {})
+    points = {}
+    for i, (x, y, z, conf) in f.p.items():
+        inside = math.isfinite(x) and math.isfinite(y) and 0 <= x <= 1 and 0 <= y <= height / width
+        valid_conf = math.isfinite(conf) and 0 <= conf <= 1
+        points[i] = (x, y, z, conf if inside and valid_conf else 0.0)
+    return F(points, f.ts)
+
+
+def scene_inspect(f, type_='pushup', width=720, height=1280, pixels=False):
+    """场景提示的离线镜像；返回 (状态, 可信点数, 原因代码)。"""
+    pairs = ((LS, RS), (LE, RE), (LW, RW), (LH, RH), (LK, RK), (LA, RA))
+    if width <= 0 or height <= 0 or f is None or not f.visible(): return ('waiting', 0, 'no_frame')
+    def inside(i):
+        x, y = f.x(i), f.y(i)
+        return (math.isfinite(x) and math.isfinite(y) and 0 <= x <= (width if pixels else 1)
+                and 0 <= y <= (height if pixels else height / width))
+    def good(i):
+        return f.rel(i) and f.conf(i) <= 1 and inside(i)
+    def outside(i):
+        return f.conf(i) >= .3 and not inside(i)
+    def side(side_no, *parts):
+        return all(good(pairs[part][side_no]) for part in parts)
+    count = sum(good(i) for pair in pairs for i in pair)
+    if type_ in ('pushup', 'chair_pushup', 'bad_pushup'): req = (0, 1, 2, 3, 4, 5)
+    elif type_ in ('squat', 'wall_sit'): req = (0, 3, 4, 5)
+    elif type_ == 'pullup': req = (0, 1, 2, 3)
+    elif type_ == 'plank': req = (0, 2, 3, 5)
+    else: req = (0, 3, 5)
+    missing, any_outside = False, False
+    for part in req:
+        l, r = pairs[part]; a, b = good(l), good(r)
+        if (not a and not b) or (type_ == 'running' and part == 5 and not (a and b)):
+            missing = True; any_outside |= (not a and outside(l)) or (not b and outside(r))
+    if missing: return ('warning', count, 'outside' if any_outside else 'missing')
+    left_torso, right_torso = side(0, 0, 3), side(1, 0, 3)
+    if not left_torso and not right_torso: return ('warning', count, 'torso_chain')
+    if type_ in ('pushup', 'chair_pushup', 'bad_pushup', 'pullup') and not (side(0,0,1,2) or side(1,0,1,2)):
+        return ('warning', count, 'arm_chain')
+    if type_ in ('squat', 'wall_sit') and not (side(0,3,4,5) or side(1,3,4,5)):
+        return ('warning', count, 'leg_chain')
+    if any(outside(i) for part in req for i in pairs[part]): return ('warning', count, 'outside')
+    torso_side = 0 if left_torso else 1
+    a, b = pairs[0][torso_side], pairs[3][torso_side]
+    torso = math.hypot(f.x(a) - f.x(b), f.y(a) - f.y(b)) / (width if pixels else 1)
+    if torso < .07: return ('warning', count, 'small')
+    near = 0
+    for part in req:
+        for i in pairs[part]:
+            if good(i):
+                x = f.x(i) / (width if pixels else 1); y = f.y(i) / (height if pixels else height / width)
+                near += x < .025 or x > .975 or y < .025 or y > .975
+    return ('warning', count, 'edge') if near >= 2 else ('usable', count, 'usable')
+
+
 def dist(a, b):
     return math.hypot(a[0] - b[0], a[1] - b[1])
 
@@ -69,6 +126,114 @@ def mid_of(f, a, b, axis):
 
 X = lambda f, i: f.p[i][0]
 Y = lambda f, i: f.p[i][1]
+
+
+# ---------------- PoseSmoother ----------------
+class PoseSmoother:
+    """Java PoseSmoother 的离线复刻，用于验证跳变与恢复的时序。"""
+    MIN_CONF = .3; BASE_ALPHA = .45; MAX_JUMP_RATIO = .6; HOLD_MS = 350
+    REACQUIRE_MS = 700; MAX_CANDIDATE_GAP_MS = 350; LOST_TRACK_RESET_MS = 1000
+    MIN_REACQUIRE_FRAMES = 3; REACQUIRE_CONF = .5
+
+    def __init__(self):
+        self.x = [0.] * N; self.y = [0.] * N; self.z = [0.] * N; self.conf = [0.] * N
+        self.last_seen = [0] * N; self.last_observed = [0] * N; self.has = [False] * N
+        self.last_scale = .2
+        self.cx = [0.] * N; self.cy = [0.] * N; self.cstart = [0] * N
+        self.clast = [0] * N; self.cframes = [0] * N
+        self.initialized = False; self.last_ts = 0; self.rejected = 0; self.reacquired = 0
+
+    def _scale(self, ts):
+        pairs = [(LS, LH), (RS, RH)]
+        lengths = [math.hypot(self.x[a] - self.x[b], self.y[a] - self.y[b])
+                   for a, b in pairs if self.has[a] and self.has[b]
+                   and ts - self.last_seen[a] <= self.HOLD_MS and ts - self.last_seen[b] <= self.HOLD_MS]
+        if lengths: self.last_scale = sum(lengths) / len(lengths)
+        return self.last_scale
+
+    def _held_confidence(self, i, ts):
+        age = max(0, ts - self.last_seen[i])
+        return 0. if age > self.HOLD_MS else self.conf[i] * (1 - .6 * min(1., age / self.HOLD_MS))
+
+    def _candidate(self, i, px, py, ts, tolerance):
+        continuous = (self.cframes[i] > 0 and ts >= self.clast[i]
+                      and ts - self.clast[i] <= self.MAX_CANDIDATE_GAP_MS
+                      and (px - self.cx[i]) ** 2 + (py - self.cy[i]) ** 2 <= tolerance ** 2)
+        if continuous:
+            self.cframes[i] += 1
+        else:
+            self.cx[i] = px; self.cy[i] = py; self.cstart[i] = ts; self.cframes[i] = 1
+        self.clast[i] = ts
+        return self.cframes[i] >= self.MIN_REACQUIRE_FRAMES and ts - self.cstart[i] >= self.REACQUIRE_MS
+
+    def pending(self):
+        return [n > 0 for n in self.cframes]
+
+    def smooth(self, raw):
+        ts = raw.ts
+        if not self.initialized or ts < self.last_ts:
+            if self.initialized: self.__init__()
+            self.initialized = True; self.last_ts = ts
+            for i in range(N):
+                px, py, pz, c = raw.p[i]
+                self.x[i], self.y[i], self.z[i], self.conf[i] = px, py, pz, c
+                self.has[i] = c >= self.MIN_CONF; self.last_seen[i] = ts; self.last_observed[i] = ts
+            return raw
+        scale = self._scale(ts); max_jump = max(.12, scale * self.MAX_JUMP_RATIO)
+        output = {}
+        for i in range(N):
+            px, py, pz, c = raw.p[i]
+            if c >= self.MIN_CONF:
+                if self.has[i] and ts - self.last_observed[i] > self.LOST_TRACK_RESET_MS:
+                    self.has[i] = False; self.cframes[i] = 0
+                self.last_observed[i] = ts
+                if self.has[i]:
+                    dx, dy = px - self.x[i], py - self.y[i]
+                    if math.hypot(dx, dy) > max_jump:
+                        stable = c >= self.REACQUIRE_CONF and self._candidate(i, px, py, ts, max(.03, scale * .25))
+                        if c < self.REACQUIRE_CONF: self.cframes[i] = 0
+                        if stable:
+                            self.x[i], self.y[i], self.z[i], self.conf[i] = px, py, pz, c
+                            self.last_seen[i] = ts; self.cframes[i] = 0; self.reacquired += 1
+                            output[i] = (px, py, pz, c)
+                        else:
+                            self.rejected += 1
+                            output[i] = (self.x[i], self.y[i], self.z[i], self._held_confidence(i, ts) * .8)
+                        continue
+                    self.cframes[i] = 0
+                    alpha = max(.25, min(.75, self.BASE_ALPHA + (c - self.MIN_CONF) * .5))
+                    ox = self.x[i] + alpha * dx; oy = self.y[i] + alpha * dy
+                    oz = self.z[i] + alpha * (pz - self.z[i])
+                else:
+                    self.cframes[i] = 0; ox, oy, oz = px, py, pz
+                self.x[i], self.y[i], self.z[i], self.conf[i] = ox, oy, oz, c
+                self.has[i] = True; self.last_seen[i] = ts
+                output[i] = (ox, oy, oz, c)
+            elif self.has[i] and ts - self.last_seen[i] <= self.HOLD_MS:
+                self.cframes[i] = 0
+                output[i] = (self.x[i], self.y[i], self.z[i], self._held_confidence(i, ts))
+            else:
+                self.cframes[i] = 0
+                if ts - self.last_observed[i] > self.LOST_TRACK_RESET_MS: self.has[i] = False
+                output[i] = (0., 0., 0., 0.)
+        self.last_ts = ts
+        return F(output, ts)
+
+
+class FrameGapGuard:
+    """镜像训练及回放对相机长时间无回调的处理。"""
+    MAX_FRAME_GAP_MS = 500
+
+    def __init__(self): self.previous = None
+
+    def process(self, analyzer, f):
+        if self.previous is not None:
+            if f.ts < self.previous:
+                analyzer.process(frame(self.previous + 1000, {}))
+            elif f.ts - self.previous > self.MAX_FRAME_GAP_MS:
+                analyzer.process(frame(f.ts, {}))
+        self.previous = f.ts
+        analyzer.process(f)
 
 
 # ---------------- BodyMetrics ----------------
@@ -95,10 +260,20 @@ def body_metrics(f):
     m = BM()
     if f is None or not f.visible():
         return m
-    if not (f.rel(LS) or f.rel(RS)) or not (f.rel(LH) or f.rel(RH)):
+    left_torso = f.rel(LS) and f.rel(LH); right_torso = f.rel(RS) and f.rel(RH)
+    if not left_torso and not right_torso:
         return m
-    sx = mid_of(f, LS, RS, X); sy = mid_of(f, LS, RS, Y)
-    hx = mid_of(f, LH, RH, X); hy = mid_of(f, LH, RH, Y)
+    use_left, use_right = left_torso, right_torso
+    if left_torso and right_torso:
+        lc, rc = min(f.conf(LS), f.conf(LH)), min(f.conf(RS), f.conf(RH))
+        if abs(lc - rc) > .25:
+            use_left, use_right = lc > rc, rc > lc
+    def paired(a, b, axis):
+        if use_left and not use_right and f.rel(a): return axis(f, a)
+        if use_right and not use_left and f.rel(b): return axis(f, b)
+        return mid_of(f, a, b, axis)
+    sx = paired(LS, RS, X); sy = paired(LS, RS, Y)
+    hx = paired(LH, RH, X); hy = paired(LH, RH, Y)
     m.sx, m.sy, m.hx, m.hy = sx, sy, hx, hy
     torso = dist((sx, sy), (hx, hy))
     m.body_scale = max(BM.MIN_SCALE, torso)
@@ -110,8 +285,8 @@ def body_metrics(f):
     m.has_ankle = f.rel(LA) or f.rel(RA)
     m.sag_ratio = float('nan'); m.sag_side = 0
     if m.has_ankle:
-        ax = mid_of(f, LA, RA, X); ay = mid_of(f, LA, RA, Y)
-        m.ankle_y = ay
+        ax = paired(LA, RA, X); ay = paired(LA, RA, Y)
+        m.ankle_y = ay; m.ankle_x = ax
         abx, aby = ax - sx, ay - sy
         l2 = abx * abx + aby * aby
         if l2 > 1e-8:
@@ -121,8 +296,8 @@ def body_metrics(f):
             cross = (ax - sx) * (hy - sy) - (ay - sy) * (hx - sx)
             m.sag_side = 0 if abs(cross) < 1e-6 else (1 if cross > 0 else -1)
     else:
-        m.ankle_y = float('nan')
-    wx = mid_of(f, LW, RW, X); wy = mid_of(f, LW, RW, Y)
+        m.ankle_y = float('nan'); m.ankle_x = float('nan')
+    wx = paired(LW, RW, X); wy = paired(LW, RW, Y)
     m.wrist_drop = (wy - sy) / m.body_scale if wy is not None else float('nan')
     if wx is not None:
         m.arm_ratio = dist((sx, sy), (wx, wy)) / m.body_scale
@@ -644,19 +819,22 @@ class Squat:
     def process(self, f):
         self.sample = None
         now = f.ts
-        if not f.visible():
-            self.clear_calibration_samples(); self.last_valid = self.last_valid; return
+        def dropout():
+            if self.last_valid is not None and now - self.last_valid > self.DROPOUT:
+                self.down = False; self.rep_min_knee = float('nan')
+                self.rep_max_lean = 0.; self.rep_max_travel = 0.
+                self.sm_knee = float('nan'); self.sm_hip = float('nan')
+        if not f.visible() or not body_metrics(f).valid:
+            self.clear_calibration_samples(); dropout(); return
         m = body_metrics(f)
-        if not m.valid:
-            self.clear_calibration_samples(); return
-        self.last_valid = now
         hip_below = m.hy > m.sy + 0.02
         ankle_below = (not m.has_ankle) or (m.ankle_y > m.hy - 0.02)
         if not hip_below or not ankle_below:
             self.clear_calibration_samples(); self.down = False; self.status = 'not standing'; return
         knee = avg_angle(f, LH, LK, LA, RH, RK, RA)
         if math.isnan(knee):
-            self.clear_calibration_samples(); return
+            self.clear_calibration_samples(); dropout(); return
+        dropout(); self.last_valid = now
         self.sm_knee = knee if math.isnan(self.sm_knee) else self.sm_knee + self.SMOOTH * (knee - self.sm_knee)
         self.sm_hip = m.hy if math.isnan(self.sm_hip) else self.sm_hip + self.SMOOTH * (m.hy - self.sm_hip)
         self.observed_stand_knee = self.stand_knee_samples.observe(knee)
@@ -752,12 +930,12 @@ class Squat:
 # ---------------- 引体向上 ----------------
 class PullUp:
     HANG = 150.0; PULL = 95.0; PARTIAL = 118.0; START = 145.0
-    MIN_RISE = 0.10; MIN_ABOVE = 0.15; MIN_REP = 400; SMOOTH = 0.5
+    MIN_RISE = 0.10; MIN_ABOVE = 0.15; MIN_REP = 400; DROPOUT = 600; SMOOTH = 0.5
 
     def __init__(self):
         self.sm = float('nan'); self.hang_reach = float('nan')
         self.pull = False; self.pull_start = 0; self.rep_min = float('nan'); self.rep_max_rise = 0.0
-        self.good = 0; self.bad = 0; self.form = 0; self.status = ''
+        self.good = 0; self.bad = 0; self.form = 0; self.status = ''; self.last_valid = None
         self.personal = None; self.observed_hang_angle = float('nan'); self.observed_hang_reach = float('nan')
         self.await_hang = False; self.sample = None
         self.hang_angle_samples = StableExtremum(True); self.hang_reach_samples = StableExtremum(True)
@@ -768,11 +946,15 @@ class PullUp:
     def process(self, f):
         self.sample = None
         m = body_metrics(f)
+        def dropout():
+            if self.last_valid is not None and f.ts - self.last_valid > self.DROPOUT:
+                self.pull = False; self.rep_min = float('nan'); self.rep_max_rise = 0.
         if not f.visible() or not m.valid:
-            self.clear_calibration_samples(); return
+            self.clear_calibration_samples(); dropout(); return
         elbow = avg_angle(f, LS, LE, LW, RS, RE, RW)
         if math.isnan(elbow) or math.isnan(m.wrist_drop):
-            self.clear_calibration_samples(); return
+            self.clear_calibration_samples(); dropout(); return
+        dropout(); self.last_valid = f.ts
         self.sm = elbow if math.isnan(self.sm) else self.sm + self.SMOOTH * (elbow - self.sm)
         decision = elbow
         if -m.wrist_drop < self.MIN_ABOVE:
@@ -868,6 +1050,7 @@ class Plank:
     def process(self, f):
         now = f.ts
         if not f.visible():
+            self.cand = None
             self.clock.invalidate()
             if self.last_valid is not None and now - self.last_valid > self.DROPOUT:
                 self.interrupt(now)
@@ -967,16 +1150,14 @@ class Handstand:
         if not m.valid:
             self.clock.invalidate()
             return
-        inverted = m.sy > m.hy + 0.02
-        ankle_y = m.ankle_y if m.has_ankle else None
-        if ankle_y is None:
-            inverted = inverted
-        else:
-            inverted = inverted and ankle_y < m.sy + 0.05
+        left_ankle, right_ankle = f.rel(LA), f.rel(RA)
+        ankles_above = ((left_ankle or right_ankle) and (not left_ankle or f.y(LA) < m.sy)
+                        and (not right_ankle or f.y(RA) < m.sy))
+        inverted = m.sy > m.hy + 0.02 and ankles_above
         tilt = math.degrees(math.atan2(abs(m.sx - m.hx), abs(m.sy - m.hy) + 1e-5))
         ankle_x = None
         if m.has_ankle:
-            ankle_x = mid_of(f, LA, RA, X)
+            ankle_x = m.ankle_x
         self.hip.append(m.hx); self.ankle.append(m.hx if ankle_x is None else ankle_x)
         self.scale.append(max(0.04, m.body_scale))
         for arr in (self.hip, self.ankle, self.scale):
@@ -1068,7 +1249,12 @@ class WallSit:
 
         hip_below_shoulder = m.hy > m.sy + 0.02
         ankle_below_knee = m.has_ankle and m.ankle_y > (m.hy + m.ankle_y) / 2 - 0.05
-        thigh_rise = abs(m.hy - mid_of(f, LK, RK, Y)) / max(0.04, m.body_scale)
+        if f.rel(LK) and f.rel(RK):
+            lc, rc = f.conf(LK), f.conf(RK)
+            knee_y = (f.y(LK) if lc > rc else f.y(RK)) if abs(lc - rc) > .25 else (f.y(LK) * lc + f.y(RK) * rc) / (lc + rc)
+        else:
+            knee_y = mid_of(f, LK, RK, Y)
+        thigh_rise = abs(m.hy - knee_y) / max(0.04, m.body_scale)
         lean = math.degrees(math.atan2(abs(m.sx - m.hx), abs(m.sy - m.hy) + 1e-5))
 
         sitting = (self.MIN_KNEE <= knee <= self.MAX_KNEE) and hip_below_shoulder \
@@ -1170,9 +1356,10 @@ class RunSteps:
 
     def process(self, f):
         now = f.ts
+        if self.last_valid is not None and now - self.last_valid > self.DROPOUT_MS:
+            self.last_sign = self.stable_frames = self.held_frames = 0
+            self.last_step_ms = None; self.intervals.clear(); self.hip_hist.clear()
         if not f.visible():
-            if self.last_valid is not None and now - self.last_valid > self.DROPOUT_MS:
-                self.last_sign = 0
             self.status = 'no person'
             return
         m = body_metrics(f)
@@ -1182,12 +1369,11 @@ class RunSteps:
         if not (f.rel(LA) and f.rel(RA)):
             self.status = 'one leg hidden'
             return
-        self.last_valid = now
-
         hip_below_shoulder = m.hy > m.sy + 0.02
         if not hip_below_shoulder:
             self.status = 'not running posture'
             return
+        self.last_valid = now
 
         scale = max(0.04, m.body_scale)
         self.last_scale = scale

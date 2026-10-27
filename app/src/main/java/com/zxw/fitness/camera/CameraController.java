@@ -47,7 +47,7 @@ import java.util.concurrent.Executors;
  * 相机 + 姿态识别 + 录像的封装。
  *
  * <p>同时使用三个用例：Preview 显示画面、ImageAnalysis 送入 ML Kit 识别姿态、
- * VideoCapture 录制 mp4 供回放。三个用例统一使用 16:9，保证骨架与画面严格对齐。</p>
+ * VideoCapture 录制 mp4 供回放。三个用例尽量使用相同画面比例；裁剪、镜像和回放对齐仍需真机验证。</p>
  */
 public class CameraController {
 
@@ -415,9 +415,11 @@ public class CameraController {
                             int h = rotation % 180 == 0 ? imageHeight : imageWidth;
                             // ML Kit 返回像素；x/y 同除以画面宽，既便于显示又保留真实角度。
                             PoseFrame displayFrame = toPoseFrame(pose, timestampMs, w);
+                            // 画面外的推测点仅供诊断，不用于训练判定或个人校准。
+                            PoseFrame boundedFrame = displayFrame.maskOutOfFrame(w, h);
                             float roll = rollDegrees;
                             PoseFrame frame = Math.abs(roll) < GravityAlign.DEAD_ZONE_DEG
-                                    ? displayFrame : GravityAlign.rotate(displayFrame, roll,
+                                    ? boundedFrame : GravityAlign.rotate(boundedFrame, roll,
                                     0.5f, h / (2f * Math.max(1, w)));
                             uprightWidth = w;
                             uprightHeight = h;

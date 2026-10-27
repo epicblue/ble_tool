@@ -11,6 +11,8 @@ import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.core.content.ContextCompat;
+
 import com.zxw.R;
 import com.zxw.fitness.analysis.ReplayTimeline;
 import com.zxw.fitness.camera.SkeletonOverlay;
@@ -19,6 +21,8 @@ import com.zxw.fitness.data.SessionStore;
 import com.zxw.fitness.model.ExerciseType;
 import com.zxw.fitness.model.PoseFrame;
 import com.zxw.fitness.model.Session;
+import com.zxw.fitness.pose.PoseSceneDiagnostics;
+import com.zxw.fitness.pose.PoseSceneResult;
 import com.zxw.fitness.util.TimeUtils;
 
 import java.io.File;
@@ -30,7 +34,7 @@ import java.util.Locale;
  * 回放页：同时支持"视频回放（叠加骨架）"和"纯骨架动画回放"。
  *
  * <p>骨架数据与视频的播放进度同步；拖动进度条、倍速播放都会重新计算当时的计数/计时，
- * 与录制时的判定完全一致。</p>
+ * 按当前版本判定；算法升级后旧记录的结果可能不同。</p>
  */
 public class ReplayActivity extends Activity {
 
@@ -57,6 +61,8 @@ public class ReplayActivity extends Activity {
     private TextView btnPrev;
     private TextView btnNext;
     private TextView tvNoVideo;
+    private TextView btnMarkerDetails;
+    private TextView tvSceneDiagnosis;
 
     private Session session;
     private PoseLog poseLog;
@@ -72,6 +78,8 @@ public class ReplayActivity extends Activity {
     private long lastTickMs;
     private float speed = 1f;
     private int speedIndex;
+    private boolean showMarkerDetails = true;
+    private int lastSceneIndex = -1;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -128,6 +136,17 @@ public class ReplayActivity extends Activity {
         btnPrev = findViewById(R.id.btnPrev);
         btnNext = findViewById(R.id.btnNext);
         tvNoVideo = findViewById(R.id.tvNoVideo);
+        btnMarkerDetails = findViewById(R.id.btnMarkerDetails);
+        tvSceneDiagnosis = findViewById(R.id.tvSceneDiagnosis);
+        btnMarkerDetails.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                showMarkerDetails = !showMarkerDetails;
+                btnMarkerDetails.setText(showMarkerDetails ? "标记：开" : "标记：关");
+                overlay.setShowDetails(showMarkerDetails);
+                lastSceneIndex = -1;
+                if (session != null) render(hasVideo && videoReady ? videoView.getCurrentPosition() : clockMs);
+            }
+        });
 
         findViewById(R.id.btnBack).setOnClickListener(new View.OnClickListener() {
             @Override
@@ -201,6 +220,10 @@ public class ReplayActivity extends Activity {
         playing = true;
         clockMs = 0;
         lastTickMs = 0;
+        lastSceneIndex = -1;
+        overlay.setPendingJumps(null);
+        overlay.setFrame(null);
+        tvSceneDiagnosis.setText("没有可用的骨架记录");
 
         poseLog = PoseLog.load(SessionStore.resolveMedia(this, session.getUserId(),
                 session.getPoseFile()));
@@ -346,6 +369,18 @@ public class ReplayActivity extends Activity {
             if (index >= 0 && poseLog != null && index < poseLog.getFrames().size()) {
                 PoseFrame frame = poseLog.getDisplayFrames().get(index);
                 overlay.setFrame(frame);
+                if (index != lastSceneIndex) {
+                    PoseSceneResult result = PoseSceneDiagnostics.inspect(frame, type,
+                            poseLog.getViewWidth(), poseLog.getViewHeight(), poseLog.isLegacyPixelCoordinates());
+                    String legend = showMarkerDetails ? "绿≥50% 黄30–49%；无点=缺失/出画"
+                            : "详细标记已关闭；基本骨架仍显示";
+                    tvSceneDiagnosis.setText("回放滤波 " + result.reliablePoints + "/" + result.totalPoints
+                            + " · " + result.message + "\n" + legend);
+                    int color = result.quality == PoseSceneResult.Quality.USABLE
+                            ? R.color.fit_text : R.color.fit_warn;
+                    tvSceneDiagnosis.setTextColor(ContextCompat.getColor(this, color));
+                    lastSceneIndex = index;
+                }
             }
             int good = timeline.getGoodRepsAt(index);
             int bad = timeline.getBadRepsAt(index);

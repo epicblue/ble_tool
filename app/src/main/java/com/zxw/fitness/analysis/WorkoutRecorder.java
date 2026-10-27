@@ -47,6 +47,7 @@ public class WorkoutRecorder implements ExerciseAnalyzer, RepListener, HoldListe
     private final RepAnalyzer repAnalyzer;
     private final HoldAnalyzer holdAnalyzer;
     private final PoseSmoother smoother = new PoseSmoother();
+    private final FrameGapGuard gapGuard = new FrameGapGuard();
 
     private PoseLogWriter writer;
     private PoseFrame lastRawFrame;
@@ -126,14 +127,14 @@ public class WorkoutRecorder implements ExerciseAnalyzer, RepListener, HoldListe
             lastFrameRecorded = frameCount > before;
             if (!lastFrameRecorded) poseLogComplete = false;
         }
-        delegate.process(filtered);
+        gapGuard.process(delegate, filtered);
     }
 
     /**
      * 只做判定，不写骨架文件（回放时使用，数据已经是滤波后的）。
      */
     public void processRecorded(PoseFrame frame) {
-        delegate.process(frame);
+        gapGuard.process(delegate, frame);
     }
 
     private void recordFrame(PoseFrame frame, int width, int height, float rollDegrees) {
@@ -190,6 +191,9 @@ public class WorkoutRecorder implements ExerciseAnalyzer, RepListener, HoldListe
         analyzer.applyCalibrationEvent(calibration);
         return null;
     }
+
+    /** 本帧原始关键点中，滤波器因大幅跳变而暂未采纳的点。 */
+    public boolean[] getPendingJumps() { return smoother.getPendingJumps(); }
 
     public int getFrameCount() {
         return frameCount;
@@ -270,6 +274,7 @@ public class WorkoutRecorder implements ExerciseAnalyzer, RepListener, HoldListe
     @Override
     public void reset() {
         smoother.reset();
+        gapGuard.reset();
         delegate.reset();
         lastRawFrame = null;
         lastFrameReceivedAt = -1;
@@ -278,7 +283,7 @@ public class WorkoutRecorder implements ExerciseAnalyzer, RepListener, HoldListe
 
     @Override
     public void process(PoseFrame frame) {
-        delegate.process(frame);
+        gapGuard.process(delegate, frame);
     }
 
     @Override

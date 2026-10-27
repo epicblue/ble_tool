@@ -571,6 +571,189 @@ check('replay restores calibration event timing', expected == actual and actual[
       and actual[second_event] == (2, 0) and actual[-1] == (3, 0),
       f'events={actual[first_event]}, {actual[second_event]}; final={actual[-1]}')
 
+# J) 骨架场景诊断与防误识别（Java: PoseSceneDiagnostics / PoseSmoother）
+def _modified(f, changes):
+    pts = dict(f.p)
+    for lm, fields in changes.items():
+        values = list(pts[lm])
+        for field, value in fields.items(): values[field] = value
+        pts[lm] = tuple(values)
+    return F(pts, f.ts)
+
+
+def _shift_visible(f, dx):
+    return F({i: (x + dx if confidence >= .3 else x, y, z, confidence)
+              for i, (x, y, z, confidence) in f.p.items()}, f.ts)
+
+
+scene = pushup(0, 168)
+check('scene diagnoses visible landmarks', scene_inspect(scene) == ('usable', 12, 'usable'))
+check('scene with no person waits', scene_inspect(frame(0, {}))[0] == 'waiting')
+outside = _modified(scene, {LW: {0: -.1}, RW: {0: 1.1}})
+check('scene warns when hands leave frame', scene_inspect(outside)[2] == 'outside')
+masked = mask_out_of_frame(outside, 720, 1280)
+check('off-frame predictions cannot drive analysis',
+      masked.conf(LW) == masked.conf(RW) == 0 and outside.conf(LW) == .9 and not math.isnan(outside.x(LW)))
+tall = _modified(scene, {LW: {1: 1.5}, RW: {1: 1.9}})
+tall_masked = mask_out_of_frame(tall, 720, 1280)
+check('portrait bounds use height/width', tall_masked.conf(LW) == .9 and tall_masked.conf(RW) == 0)
+invalid = _modified(scene, {LW: {0: float('inf')}, RW: {3: float('nan')}})
+invalid_masked = mask_out_of_frame(invalid, 720, 1280)
+check('non-finite points are excluded', invalid_masked.conf(LW) == invalid_masked.conf(RW) == 0)
+crossed = _modified(scene, {RS: {3: .05}, LH: {3: .05}})
+check('opposite shoulder and hip do not form torso', not body_metrics(crossed).valid
+      and scene_inspect(crossed)[2] == 'torso_chain')
+partial = _modified(scene, {RS: {0: .75}, RH: {3: .05}})
+check('single coherent torso ignores other shoulder', body_metrics(partial).valid
+      and abs(body_metrics(partial).sx - scene.x(LS)) < 1e-6)
+low_side = _modified(scene, {RS: {0: .72, 3: .6}, RH: {0: .92, 3: .6}})
+check('torso uses higher-confidence side', body_metrics(low_side).valid
+      and abs(body_metrics(low_side).sx - scene.x(LS)) < 1e-6)
+single_ankle = _modified(scene, {RA: {3: .05}})
+check('running needs both ankles', scene_inspect(single_ankle, 'running')[2] == 'missing')
+pixels = F({i: (x * 720, y * 720, z * 720, c) for i, (x, y, z, c) in scene.p.items()}, scene.ts)
+check('legacy pixel diagnosis matches normalized', scene_inspect(pixels, pixels=True) == scene_inspect(scene))
+small = F({i: (.5 + (x - .5) * .2, .5 + (y - .5) * .2, z, c)
+           for i, (x, y, z, c) in scene.p.items()}, scene.ts)
+check('scene warns when body too small', scene_inspect(small)[2] == 'small')
+
+smoother = PoseSmoother(); smoother.smooth(scene)
+one_jump = _modified(pushup(STEP, 168), {LW: {0: .75}})
+held = smoother.smooth(one_jump)
+check('one-frame jump rejected and highlighted', smoother.pending()[LW]
+      and abs(held.x(LW) - scene.x(LW)) < .001 and smoother.reacquired == 0)
+restored = smoother.smooth(pushup(STEP * 2, 168))
+check('single-frame jump does not poison tracking', not smoother.pending()[LW]
+      and abs(restored.x(LW) - scene.x(LW)) < .001)
+smoother = PoseSmoother(); smoother.smooth(scene)
+old = None
+for n in range(1, 8): old = smoother.smooth(_shift_visible(pushup(n * STEP, 168), .16))
+check('long rejected jump expires stale pose', not old.rel(LS) and smoother.pending()[LS])
+for n in range(8, 16): old = smoother.smooth(_shift_visible(pushup(n * STEP, 168), .16))
+check('stable new position is reacquired', old.rel(LS) and abs(old.x(LS) - scene.x(LS) - .16) < .001
+      and not smoother.pending()[LS] and smoother.reacquired > 0)
+smoother = PoseSmoother(); smoother.smooth(scene)
+for n in range(1, 28):
+    last = smoother.smooth(_shift_visible(pushup(n * STEP, 168), .16 if n % 2 else -.16))
+check('alternating jump candidates never reacquired', smoother.reacquired == 0 and not last.rel(LS))
+sm = PoseSmoother(); sm.smooth(scene)
+for n in range(1, 6): sm.smooth(_shift_visible(pushup(n * STEP, 168), .16))
+missing = _modified(_shift_visible(pushup(6 * STEP, 168), .16), {LS: {3: .05}})
+sm.smooth(missing)
+for n in range(7, 16): result = sm.smooth(_shift_visible(pushup(n * STEP, 168), .16))
+check('missing candidate resets its stability window', sm.pending()[LS] and not result.rel(LS))
+for n in range(16, 21): result = sm.smooth(_shift_visible(pushup(n * STEP, 168), .16))
+check('candidate reacquires after a fresh stable window', not sm.pending()[LS] and result.rel(LS))
+sm = PoseSmoother(); sm.smooth(scene)
+for n in range(1, 18): sm.smooth(frame(n * STEP, {}))
+returned = sm.smooth(_shift_visible(pushup(18 * STEP, 168), .16))
+check('long absence resets old tracking lock', returned.rel(LS) and not sm.pending()[LS]
+      and abs(returned.x(LS) - scene.x(LS) - .16) < 1e-6)
+sm = PoseSmoother(); sm.smooth(pushup(660, 168)); sm.smooth(_shift_visible(pushup(726, 168), .16))
+rolled_back = sm.smooth(_shift_visible(pushup(10, 168), .16))
+check('timestamp rollback clears pending track', rolled_back.rel(LS) and not sm.pending()[LS]
+      and abs(rolled_back.x(LS) - scene.x(LS) - .16) < 1e-6)
+# 无回调时不能将整段空白算进保持时间；回放根据同一帧时间戳复现。
+guard = FrameGapGuard(); timer = Plank(); logged = []
+for n in range(20):
+    f = plank(n * STEP, 0., True); guard.process(timer, f); logged.append(f)
+before_gap = timer.best_ms()
+f = plank(19 * STEP + 2000, 0., True); guard.process(timer, f); logged.append(f)
+check('camera gap is not counted as valid hold', before_gap >= 1000 and timer.best_ms() == before_gap)
+replay_guard = FrameGapGuard(); replay_timer = Plank()
+for f in logged: replay_guard.process(replay_timer, f)
+check('hold gap is reproduced in replay', replay_timer.best_ms() == before_gap)
+arming_guard = FrameGapGuard(); arming = Plank()
+for n in range(3): arming_guard.process(arming, plank(n * STEP, 0., True))
+arming_guard.process(arming, plank(2 * STEP + 501, 0., True))
+check('camera gap resets pending hold arming', arming.attempts == 0 and arming.best_ms() == 0)
+# 一次动作做到中途后相机停止回调，恢复时不能把不可见的往返记为一整次。
+for kind in ('pushup', 'squat', 'pullup'):
+    guard = FrameGapGuard(); cls = {'pushup': PushUp, 'squat': Squat, 'pullup': PullUp}[kind]
+    counter = cls(); unguarded = cls(); t = 0
+    def pose(ts, angle):
+        depth = max(0., (168. - angle) / 78.)
+        if kind == 'pushup': return pushup(ts, angle)
+        if kind == 'squat': return squat(ts, angle, depth * .6)
+        return pullup(ts, angle, depth * .7)
+    def feed(ts, angle):
+        f = pose(ts, angle); guard.process(counter, f); unguarded.process(f)
+    for _ in range(5): feed(t, 168); t += STEP
+    for angle in (155,145,135,125,115,105,95,90):
+        for _ in range(3): feed(t, angle); t += STEP
+    t += 2000
+    for _ in range(6): feed(t, 168); t += STEP
+    check('camera gap cannot complete ' + kind, counter.good == counter.bad == 0
+          and (kind != 'pushup' or unguarded.good + unguarded.bad == 1))
+
+smoother = PoseSmoother(); counter = PushUp(); t = 0
+for _ in range(5): counter.process(smoother.smooth(pushup(t, 168))); t += STEP
+for a in (155,145,135,125,115,105,95,90):
+    for _ in range(3): counter.process(smoother.smooth(pushup(t, a))); t += STEP
+for _ in range(16): counter.process(smoother.smooth(_shift_visible(pushup(t, 168), .16))); t += STEP
+check('tracking jump does not finish a rep', counter.good == counter.bad == 0)
+# 持续有帧，但关键关节长时间遮挡，不能把丢失前后的姿态拼成一次动作。
+for kind in ('squat', 'pullup'):
+    cls = Squat if kind == 'squat' else PullUp
+    counter = cls(); filtered_counter = cls(); sm = PoseSmoother(); guard = FrameGapGuard(); t = 0
+    def feed_partial(raw):
+        counter.process(raw); guard.process(filtered_counter, sm.smooth(raw))
+    def pose_partial(ts, angle):
+        depth = max(0., (168. - angle) / 78.)
+        return squat(ts, angle, depth * .6) if kind == 'squat' else pullup(ts, angle, depth * .7)
+    for _ in range(5): feed_partial(pose_partial(t, 168)); t += STEP
+    for a in (155,145,135,125,115,105,95,90):
+        for _ in range(3): feed_partial(pose_partial(t, a)); t += STEP
+    missing_joints = (LK, RK) if kind == 'squat' else (LE, RE)
+    for _ in range(15):
+        raw = pose_partial(t, 90)
+        feed_partial(_modified(raw, {missing_joints[0]: {3: .05}, missing_joints[1]: {3: .05}})); t += STEP
+    for _ in range(6): feed_partial(pose_partial(t, 168)); t += STEP
+    check('missing joints cannot complete ' + kind, counter.good == counter.bad == 0)
+    check('filtered missing joints cannot complete ' + kind, filtered_counter.good == filtered_counter.bad == 0)
+steps = RunSteps(); filtered_steps = RunSteps(); sm = PoseSmoother(); guard = FrameGapGuard(); t = 0
+def feed_steps(raw):
+    steps.process(raw); guard.process(filtered_steps, sm.smooth(raw))
+for _ in range(5): feed_steps(running(t, .16, 0)); t += STEP
+for _ in range(5): feed_steps(running(t, 0, .16)); t += STEP
+before, filtered_before = steps.steps, filtered_steps.steps
+for _ in range(15):
+    feed_steps(_modified(running(t, 0, .16), {RA: {3: .05}})); t += STEP
+for _ in range(5): feed_steps(running(t, .16, 0)); t += STEP
+check('running recovery does not invent an unseen step', before > 0 and steps.steps == before)
+check('filtered running recovery does not invent a step', filtered_before > 0 and filtered_steps.steps == filtered_before)
+# 保存的是滤波帧，回放不再执行滤波；逐帧重放应得到同样的状态。
+smoother = PoseSmoother(); live = PushUp(); logged = []; expected = []; t = 0
+samples = [168] * 5 + [155,145,135,125,115,105,95,90] * 3 + [168] * 16
+jump_start = 5 + 8 * 3
+for i, angle in enumerate(samples):
+    raw = pushup(t, angle)
+    if i >= jump_start: raw = _shift_visible(raw, .16)
+    filtered = smoother.smooth(raw); live.process(filtered)
+    logged.append(filtered); expected.append((live.good, live.bad)); t += STEP
+replayed = PushUp(); actual = []
+for filtered in logged:
+    replayed.process(filtered); actual.append((replayed.good, replayed.bad))
+check('filtered jump replay reproduces live counts', actual == expected)
+counter = PushUp(); smoother = PoseSmoother(); t = 0
+for _ in range(5): counter.process(smoother.smooth(pushup(t, 168))); t += STEP
+for _ in range(3):
+    for a in rep_profile(90, 168, 8) + [168] * 3:
+        counter.process(smoother.smooth(pushup(t, a))); t += STEP
+check('normal reps survive smoother changes', counter.good == 3 and counter.bad == 0)
+
+hand_missing = Handstand(); hand_ground = Handstand(); hand_one_down = Handstand(); wall_single = WallSit()
+for n in range(60):
+    h = handstand(n * STEP, 0, True)
+    hand_missing.process(_modified(h, {LA: {3: .05}, RA: {3: .05}}))
+    hand_ground.process(_modified(h, {LA: {1: .9}, RA: {1: .9}}))
+    hand_one_down.process(_modified(h, {RA: {1: .9}}))
+    wall_single.process(_modified(wall_sit(n * STEP), {RK: {1: 0., 3: .05}}))
+check('handstand missing ankles does not time', hand_missing.best_ms() == 0)
+check('bent body with feet down does not time', hand_ground.best_ms() == 0)
+check('one visible foot down is not a handstand', hand_one_down.best_ms() == 0)
+check('wall sit works with one occluded knee', wall_single.best_ms() >= 3000)
+
 failed = [r for r in results if not r[1]]
 for name, ok, extra in results:
     print(('PASS  ' if ok else 'FAIL  ') + name.ljust(34) + ('[' + extra + ']' if extra else ''))

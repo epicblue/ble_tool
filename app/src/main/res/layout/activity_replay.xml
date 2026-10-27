@@ -124,6 +124,49 @@
             android:textSize="14sp" />
     </LinearLayout>
 
+    <!-- 历史回放展示录制的滤波后关键点；开关仅控制详细标记。 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:layout_marginLeft="16dp"
+        android:layout_marginTop="76dp"
+        android:layout_marginRight="16dp"
+        android:gravity="top"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/btnMarkerDetails"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/fit_bg_pill"
+            android:clickable="true"
+            android:focusable="true"
+            android:paddingLeft="10dp"
+            android:paddingTop="8dp"
+            android:paddingRight="10dp"
+            android:paddingBottom="8dp"
+            android:text="标记：开"
+            android:textColor="@color/fit_text"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/tvSceneDiagnosis"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginLeft="6dp"
+            android:layout_weight="1"
+            android:background="@drawable/fit_bg_pill"
+            android:maxLines="4"
+            android:paddingLeft="10dp"
+            android:paddingTop="6dp"
+            android:paddingRight="10dp"
+            android:paddingBottom="6dp"
+            android:text="等待骨架画面"
+            android:textColor="@color/fit_text"
+            android:textSize="11sp" />
+    </LinearLayout>
+
     <!-- 底部控制面板 -->
     <LinearLayout
         android:layout_width="match_parent"

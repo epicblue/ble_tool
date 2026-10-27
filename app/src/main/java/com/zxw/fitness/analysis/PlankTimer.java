@@ -76,6 +76,7 @@ public class PlankTimer implements HoldAnalyzer {
         long now = frame == null ? System.currentTimeMillis() : frame.getTimestampMs();
 
         if (frame == null || !frame.isVisible()) {
+            candidateStartMs = -1;
             clock.invalidate();
             if (lastValidMs >= 0 && now - lastValidMs > DROPOUT_MS) {
                 interrupt(now);

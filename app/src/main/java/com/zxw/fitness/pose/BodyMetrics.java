@@ -90,16 +90,23 @@ public final class BodyMetrics {
         if (f == null || !f.isVisible()) {
             return invalid();
         }
-        if (!reliable(f, PoseFrame.LEFT_SHOULDER) && !reliable(f, PoseFrame.RIGHT_SHOULDER)) {
-            return invalid();
+        boolean leftTorso = reliable(f, PoseFrame.LEFT_SHOULDER) && reliable(f, PoseFrame.LEFT_HIP);
+        boolean rightTorso = reliable(f, PoseFrame.RIGHT_SHOULDER) && reliable(f, PoseFrame.RIGHT_HIP);
+        // 肩和髋必须至少有同一侧完整，不能把左肩和右髋硬拼成虚假的躯干。
+        if (!leftTorso && !rightTorso) return invalid();
+        boolean useLeft = leftTorso, useRight = rightTorso;
+        if (leftTorso && rightTorso) {
+            float leftConfidence = Math.min(f.getConfidence(PoseFrame.LEFT_SHOULDER), f.getConfidence(PoseFrame.LEFT_HIP));
+            float rightConfidence = Math.min(f.getConfidence(PoseFrame.RIGHT_SHOULDER), f.getConfidence(PoseFrame.RIGHT_HIP));
+            if (Math.abs(leftConfidence - rightConfidence) > PoseMath.CONFIDENCE_GAP) {
+                useLeft = leftConfidence > rightConfidence;
+                useRight = !useLeft;
+            }
         }
-        if (!reliable(f, PoseFrame.LEFT_HIP) && !reliable(f, PoseFrame.RIGHT_HIP)) {
-            return invalid();
-        }
-        float sx = mid(f, PoseFrame.LEFT_SHOULDER, PoseFrame.RIGHT_SHOULDER);
-        float sy = midY(f, PoseFrame.LEFT_SHOULDER, PoseFrame.RIGHT_SHOULDER);
-        float hx = mid(f, PoseFrame.LEFT_HIP, PoseFrame.RIGHT_HIP);
-        float hy = midY(f, PoseFrame.LEFT_HIP, PoseFrame.RIGHT_HIP);
+        float sx = pairedX(f, PoseFrame.LEFT_SHOULDER, PoseFrame.RIGHT_SHOULDER, useLeft, useRight);
+        float sy = pairedY(f, PoseFrame.LEFT_SHOULDER, PoseFrame.RIGHT_SHOULDER, useLeft, useRight);
+        float hx = pairedX(f, PoseFrame.LEFT_HIP, PoseFrame.RIGHT_HIP, useLeft, useRight);
+        float hy = pairedY(f, PoseFrame.LEFT_HIP, PoseFrame.RIGHT_HIP, useLeft, useRight);
         float torso = dist(sx, sy, hx, hy);
         float scale = Math.max(MIN_SCALE, torso);
 
@@ -121,8 +128,8 @@ public final class BodyMetrics {
         float sag = Float.NaN;
         int sagSide = 0;
         if (hasAnkle) {
-            ax = mid(f, PoseFrame.LEFT_ANKLE, PoseFrame.RIGHT_ANKLE);
-            ay = midY(f, PoseFrame.LEFT_ANKLE, PoseFrame.RIGHT_ANKLE);
+            ax = pairedX(f, PoseFrame.LEFT_ANKLE, PoseFrame.RIGHT_ANKLE, useLeft, useRight);
+            ay = pairedY(f, PoseFrame.LEFT_ANKLE, PoseFrame.RIGHT_ANKLE, useLeft, useRight);
             float[] projection = projectOnLine(hx, hy, sx, sy, ax, ay);
             if (projection != null) {
                 sag = dist(hx, hy, projection[0], projection[1]) / scale;
@@ -133,8 +140,8 @@ public final class BodyMetrics {
         }
 
         float wristDrop = Float.NaN;
-        float wx = mid(f, PoseFrame.LEFT_WRIST, PoseFrame.RIGHT_WRIST);
-        float wy = midY(f, PoseFrame.LEFT_WRIST, PoseFrame.RIGHT_WRIST);
+        float wx = pairedX(f, PoseFrame.LEFT_WRIST, PoseFrame.RIGHT_WRIST, useLeft, useRight);
+        float wy = pairedY(f, PoseFrame.LEFT_WRIST, PoseFrame.RIGHT_WRIST, useLeft, useRight);
         if (!Float.isNaN(wy)) {
             wristDrop = (wy - sy) / scale;
         }
@@ -170,6 +177,19 @@ public final class BodyMetrics {
 
     private static boolean reliable(PoseFrame f, int lm) {
         return f.isReliable(lm, CONF);
+    }
+
+    /** 只看到一侧躯干时尽量用同一侧的端点，避免另一侧残缺关键点污染比例。 */
+    private static float pairedX(PoseFrame f, int left, int right, boolean leftTorso, boolean rightTorso) {
+        if (leftTorso && !rightTorso && reliable(f, left)) return f.getX(left);
+        if (rightTorso && !leftTorso && reliable(f, right)) return f.getX(right);
+        return mid(f, left, right);
+    }
+
+    private static float pairedY(PoseFrame f, int left, int right, boolean leftTorso, boolean rightTorso) {
+        if (leftTorso && !rightTorso && reliable(f, left)) return f.getY(left);
+        if (rightTorso && !leftTorso && reliable(f, right)) return f.getY(right);
+        return midY(f, left, right);
     }
 
     /** 只可靠一侧时取该侧，两侧都可靠取中点。 */

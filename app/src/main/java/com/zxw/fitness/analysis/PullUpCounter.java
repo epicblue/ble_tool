@@ -109,17 +109,18 @@ public class PullUpCounter implements PersonalCalibrationAnalyzer {
             handleDropout(now);
             return;
         }
-        lastValidMs = now;
-
         float elbow = PoseMath.averageAngle(frame,
                 PoseFrame.LEFT_SHOULDER, PoseFrame.LEFT_ELBOW, PoseFrame.LEFT_WRIST,
                 PoseFrame.RIGHT_SHOULDER, PoseFrame.RIGHT_ELBOW, PoseFrame.RIGHT_WRIST);
         if (Float.isNaN(elbow) || Float.isNaN(metrics.wristDropRatio)) {
             clearCalibrationSamples();
+            handleDropout(now);
             phaseText = "请让手臂完整入镜";
             hint = "镜头需要拍到杆与双手";
             return;
         }
+        if (lastValidMs >= 0 && now - lastValidMs > DROPOUT_MS) handleDropout(now);
+        lastValidMs = now;
         smoothedElbow = Float.isNaN(smoothedElbow)
                 ? elbow
                 : smoothedElbow + SMOOTHING * (elbow - smoothedElbow);

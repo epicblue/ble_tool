@@ -3,6 +3,7 @@ package com.zxw.fitness.analysis;
 import com.zxw.fitness.model.ExerciseType;
 import com.zxw.fitness.model.PoseFrame;
 import com.zxw.fitness.pose.BodyMetrics;
+import com.zxw.fitness.pose.PoseMath;
 
 import java.util.Locale;
 
@@ -106,7 +107,13 @@ public class HandstandTimer implements HoldAnalyzer {
         }
         lastValidMs = now;
 
-        boolean inverted = m.isInverted();
+        // 只看到肩髋倒置可能是弯腰；可见的脚踝都需要高于肩，至少看见一只。
+        boolean leftAnkle = PoseMath.isReliable(frame, PoseFrame.LEFT_ANKLE);
+        boolean rightAnkle = PoseMath.isReliable(frame, PoseFrame.RIGHT_ANKLE);
+        boolean anklesAboveShoulder = (leftAnkle || rightAnkle)
+                && (!leftAnkle || frame.getY(PoseFrame.LEFT_ANKLE) < m.shoulderY)
+                && (!rightAnkle || frame.getY(PoseFrame.RIGHT_ANKLE) < m.shoulderY);
+        boolean inverted = m.isInverted() && anklesAboveShoulder;
         float tilt = m.torsoAngleFromVertical();
         float hipX = m.hipX;
         float ankleX = m.hasAnkle ? m.ankleX : Float.NaN;
@@ -167,8 +174,10 @@ public class HandstandTimer implements HoldAnalyzer {
                 }
             } else {
                 inGrace = false;
-                if (!inverted) {
-                    statusText = "未检测到倒立（双脚需高于髋部）";
+                if (!m.hasAnkle) {
+                    statusText = "请让脚踝进入画面，以确认倒立";
+                } else if (!inverted) {
+                    statusText = "未检测到倒立（脚踝需高于肩部）";
                 } else if (!vertical) {
                     statusText = isWallType()
                             ? "身体不够竖直，靠近墙借力"

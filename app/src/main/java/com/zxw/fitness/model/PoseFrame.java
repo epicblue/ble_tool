@@ -133,6 +133,35 @@ public class PoseFrame {
         return of(timestampMs, nx, ny, nz, nc);
     }
 
+    /** 该关键点的位置是否真的落在摄像头/视频画面内（坐标不是数值时也返回 false）。 */
+    public boolean isWithinImage(int landmark, int width, int height, boolean pixels) {
+        if (landmark < 0 || landmark >= LANDMARK_COUNT || width <= 0 || height <= 0) return false;
+        float px = x[landmark];
+        float py = y[landmark];
+        float maxX = pixels ? width : 1f;
+        float maxY = pixels ? height : height / (float) width;
+        return !Float.isNaN(px) && !Float.isInfinite(px) && !Float.isNaN(py) && !Float.isInfinite(py)
+                && px >= 0f && px <= maxX && py >= 0f && py <= maxY;
+    }
+
+    /**
+     * ML Kit 有时会给画面外的推测点较高的置信度。保留原帧供显示，判定帧中将其标为不可用，
+     * 避免出画的手脚继续参与角度/计数。此方法必须在重力旋转之前调用。
+     */
+    public PoseFrame maskOutOfFrame(int width, int height) {
+        if (width <= 0 || height <= 0) return empty(timestampMs);
+        float[] validConfidence = null;
+        for (int i = 0; i < LANDMARK_COUNT; i++) {
+            float c = confidence[i];
+            if ((c != 0f && !isWithinImage(i, width, height, false))
+                    || Float.isNaN(c) || Float.isInfinite(c) || c < 0f || c > 1f) {
+                if (validConfidence == null) validConfidence = Arrays.copyOf(confidence, LANDMARK_COUNT);
+                validConfidence[i] = 0f;
+            }
+        }
+        return validConfidence == null ? this : of(timestampMs, x, y, z, validConfidence);
+    }
+
     public long getTimestampMs() {
         return timestampMs;
     }

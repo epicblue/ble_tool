@@ -4,7 +4,7 @@ import com.zxw.fitness.model.PoseFrame;
 
 /**
  * 动作判定器统一接口：实时训练与回放共用同一套判定逻辑，
- * 因此回放时看到的计数、计时与录制时完全一致。
+ * 回放使用当前版本重算；升级算法后旧记录的重算值可能不同。
  */
 public interface ExerciseAnalyzer {
 
@@ -13,7 +13,7 @@ public interface ExerciseAnalyzer {
 
     /**
      * 处理一帧关键点。实时模式由相机回调驱动，回放模式由播放器按录制时间戳驱动；
-     * 判定只依赖帧内的 timestampMs，所以两者结果相同。
+     * 相同版本下时间间隔由 FrameGapGuard 一致处理，记录还可能包含个人校准事件。
      */
     void process(PoseFrame frame);
 

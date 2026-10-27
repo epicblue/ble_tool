@@ -10,6 +10,7 @@ import android.graphics.Bitmap;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.ProgressBar;
@@ -25,6 +26,7 @@ import androidx.lifecycle.LifecycleOwner;
 import androidx.lifecycle.LifecycleRegistry;
 
 import com.zxw.R;
+import com.zxw.fitness.analysis.FrameGapGuard;
 import com.zxw.fitness.analysis.HoldAnalyzer;
 import com.zxw.fitness.analysis.RepAnalyzer;
 import com.zxw.fitness.analysis.RepEvent;
@@ -38,6 +40,8 @@ import com.zxw.fitness.model.PoseFrame;
 import com.zxw.fitness.model.PersonalCalibration;
 import com.zxw.fitness.model.Session;
 import com.zxw.fitness.model.UserProfile;
+import com.zxw.fitness.pose.PoseSceneDiagnostics;
+import com.zxw.fitness.pose.PoseSceneResult;
 import com.zxw.fitness.util.TimeUtils;
 
 import java.io.File;
@@ -73,6 +77,8 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
     private TextView btnFinish;
     private TextView btnCalibrate;
     private TextView tvCalibration;
+    private TextView btnMarkerDetails;
+    private TextView tvSceneDiagnosis;
     private ProgressBar progress;
     private View hintBox;
     private TextView tvHintTitle;
@@ -95,6 +101,10 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
     private File thumbFile;
     private long lastRecBlink;
     private int calibrationCountdown;
+    private boolean showMarkerDetails = true;
+    private long lastPoseReceivedAt = -1;
+    private long lastSceneUpdateAt = -1;
+    private long slowFrameWarningUntil = -1;
 
     @Override
     public Lifecycle getLifecycle() {
@@ -131,6 +141,8 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
         btnFinish = findViewById(R.id.btnFinish);
         btnCalibrate = findViewById(R.id.btnCalibrate);
         tvCalibration = findViewById(R.id.tvCalibration);
+        btnMarkerDetails = findViewById(R.id.btnMarkerDetails);
+        tvSceneDiagnosis = findViewById(R.id.tvSceneDiagnosis);
         progress = findViewById(R.id.progress);
         hintBox = findViewById(R.id.hintBox);
         tvHintTitle = findViewById(R.id.tvHintTitle);
@@ -155,6 +167,17 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
         progress.setMax(100);
         progress.setProgress(0);
 
+        btnMarkerDetails.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                showMarkerDetails = !showMarkerDetails;
+                btnMarkerDetails.setText(showMarkerDetails ? "标记：开" : "标记：关");
+                overlay.setShowDetails(showMarkerDetails);
+                lastSceneUpdateAt = -1;
+            }
+        });
+        findViewById(R.id.btnDismissHint).setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { hintBox.setVisibility(View.GONE); }
+        });
         findViewById(R.id.btnBack).setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -620,6 +643,11 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
     protected void onResume() {
         super.onResume();
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME);
+        lastPoseReceivedAt = -1;
+        lastSceneUpdateAt = -1;
+        slowFrameWarningUntil = -1;
+        handler.removeCallbacks(sceneWatchdog);
+        handler.postDelayed(sceneWatchdog, 500);
     }
 
     @Override
@@ -634,6 +662,11 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
     @Override
     protected void onPause() {
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_PAUSE);
+        handler.removeCallbacks(sceneWatchdog);
+        lastPoseReceivedAt = -1;
+        overlay.setPendingJumps(null);
+        overlay.setFrame(null);
+        tvSceneDiagnosis.setText("相机已暂停");
         if (running) {
             finishWorkout(true);
         }
@@ -664,16 +697,57 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
 
     // ---- CameraController.Listener ----
 
+    /** 不让相机停止回调时上一帧骨架一直留在画面上。 */
+    private final Runnable sceneWatchdog = new Runnable() {
+        @Override public void run() {
+            long now = SystemClock.elapsedRealtime();
+            if (lastPoseReceivedAt < 0 || now - lastPoseReceivedAt > 1500) {
+                tvSceneDiagnosis.setText("暂无新骨架画面，请检查相机和光线");
+                tvSceneDiagnosis.setTextColor(ContextCompat.getColor(TrainingActivity.this, R.color.fit_warn));
+                overlay.setPendingJumps(null);
+                overlay.setFrame(null);
+                lastSceneUpdateAt = -1;
+            }
+            handler.postDelayed(this, 500);
+        }
+    };
+
     @Override
     public void onPose(@NonNull PoseFrame frame, @NonNull PoseFrame displayFrame,
                        int uprightWidth, int uprightHeight, float rollDegrees) {
-        if (overlay != null) {
-            overlay.setSourceSize(uprightWidth, uprightHeight);
-            overlay.setPixelCoordinates(false);
-            overlay.setFrame(displayFrame);
+        if (!lifecycleRegistry.getCurrentState().isAtLeast(Lifecycle.State.RESUMED)) return;
+        long now = SystemClock.elapsedRealtime();
+        if (lastPoseReceivedAt >= 0 && now - lastPoseReceivedAt > FrameGapGuard.MAX_FRAME_GAP_MS) {
+            slowFrameWarningUntil = now + 2000;
         }
+        lastPoseReceivedAt = now;
+        boolean[] pending = null;
         if (running && recorder != null) {
             recorder.onPose(frame, uprightWidth, uprightHeight, rollDegrees);
+            pending = recorder.getPendingJumps();
+        }
+        overlay.setSourceSize(uprightWidth, uprightHeight);
+        overlay.setPixelCoordinates(false);
+        overlay.setPendingJumps(pending);
+        overlay.setFrame(displayFrame);
+        if (lastSceneUpdateAt < 0 || now - lastSceneUpdateAt >= 250) {
+            PoseSceneResult result = PoseSceneDiagnostics.inspect(
+                    displayFrame, exerciseType, uprightWidth, uprightHeight, false);
+            int pendingCount = 0;
+            if (pending != null) {
+                for (int lm : PoseFrame.LANDMARK_SUBSET) if (pending[lm]) pendingCount++;
+            }
+            String pendingText = pendingCount > 0 ? "；待定" + pendingCount + "点" : "";
+            boolean slow = now < slowFrameWarningUntil;
+            String timingText = slow ? "；画面卡顿" : "";
+            String legend = showMarkerDetails ? "绿≥50% 黄30–49% 紫=待定；无点=缺失/出画"
+                    : "详细标记已关闭；基本骨架仍显示";
+            tvSceneDiagnosis.setText("原始 " + result.reliablePoints + "/" + result.totalPoints
+                    + " · " + result.message + pendingText + timingText + "\n" + legend);
+            int color = result.quality == PoseSceneResult.Quality.USABLE && pendingCount == 0 && !slow
+                    ? R.color.fit_text : R.color.fit_warn;
+            tvSceneDiagnosis.setTextColor(ContextCompat.getColor(this, color));
+            lastSceneUpdateAt = now;
         }
     }
 

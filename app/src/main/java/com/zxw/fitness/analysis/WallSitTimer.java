@@ -110,7 +110,7 @@ public class WallSitTimer implements HoldAnalyzer {
             return;
         }
 
-        float kneeMidY = PoseMath.midY(frame, PoseFrame.LEFT_KNEE, PoseFrame.RIGHT_KNEE);
+        float kneeMidY = PoseMath.reliableMidY(frame, PoseFrame.LEFT_KNEE, PoseFrame.RIGHT_KNEE);
         float thighRise = Float.isNaN(kneeMidY)
                 ? 0f
                 : Math.abs(metrics.hipY - kneeMidY) / Math.max(0.04f, metrics.bodyScale);

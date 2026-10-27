@@ -126,8 +126,6 @@ public class SquatCounter implements PersonalCalibrationAnalyzer {
             handleDropout(now);
             return;
         }
-        lastValidMs = now;
-
         // 站姿门槛：髋在肩下方，脚踝在髋下方
         boolean hipBelowShoulder = metrics.hipY > metrics.shoulderY + 0.02f;
         boolean ankleBelowHip = !metrics.hasAnkle || metrics.ankleY > metrics.hipY - 0.02f;
@@ -144,11 +142,13 @@ public class SquatCounter implements PersonalCalibrationAnalyzer {
                 PoseFrame.RIGHT_HIP, PoseFrame.RIGHT_KNEE, PoseFrame.RIGHT_ANKLE);
         if (Float.isNaN(knee)) {
             clearCalibrationSamples();
+            handleDropout(now);
             phaseText = "请让腿部完整入镜";
             hint = "膝盖或脚踝被遮挡";
-            hidePartial();
             return;
         }
+        if (lastValidMs >= 0 && now - lastValidMs > DROPOUT_MS) handleDropout(now);
+        lastValidMs = now;
         smoothedKnee = Float.isNaN(smoothedKnee)
                 ? knee
                 : smoothedKnee + SMOOTHING * (knee - smoothedKnee);
@@ -387,6 +387,8 @@ public class SquatCounter implements PersonalCalibrationAnalyzer {
         }
         if (now - lastValidMs > DROPOUT_MS) {
             dropPhase();
+            smoothedKnee = Float.NaN;
+            smoothedHipY = Float.NaN;
             phaseText = "未检测到人体";
             hint = "请让全身进入画面";
         } else {
@@ -400,11 +402,6 @@ public class SquatCounter implements PersonalCalibrationAnalyzer {
         repMinKnee = Float.NaN;
         repMaxLean = 0f;
         repMaxTravel = 0f;
-    }
-
-    private void hidePartial() {
-        phaseText = "请让腿部完整入镜";
-        hint = "";
     }
 
     @Override

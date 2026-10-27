@@ -15,7 +15,7 @@ import java.util.List;
  * 回放时间轴：把录制的关键点重新喂给判定器，预先算出每一帧对应的计数/计时与提示，
  * 回放拖动进度条时可以直接取值，无需重新计算。
  *
- * <p>与实时训练共用同一套判定器，因此回放显示的成绩与录制时一致。</p>
+ * <p>与实时训练共用同一套判定器，算法升级后旧记录的回放成绩可能不同。</p>
  */
 public class ReplayTimeline {
 
@@ -92,13 +92,14 @@ public class ReplayTimeline {
             }
         });
         int nextEvent = 0;
+        FrameGapGuard gapGuard = new FrameGapGuard();
         long duration = 0;
         for (int i = 0; i < size; i++) {
             PoseFrame frame = frames.get(i);
             times[i] = frame.getTimestampMs();
             duration = Math.max(duration, times[i]);
             if (repAnalyzer != null) {
-                repAnalyzer.process(frame);
+                gapGuard.process(repAnalyzer, frame);
                 while (nextEvent < events.size() && events.get(nextEvent).frameIndex <= i) {
                     if (calibrated != null) {
                         calibrated.applyCalibrationEvent(events.get(nextEvent).calibration);
@@ -114,7 +115,7 @@ public class ReplayTimeline {
                 hold[i] = 0;
                 status[i] = repAnalyzer.getStatusText();
             } else {
-                holdAnalyzer.process(frame);
+                gapGuard.process(holdAnalyzer, frame);
                 score[i] = holdAnalyzer.getBestHoldMs() / 1000f;
                 progress[i] = Math.min(1f, holdAnalyzer.getCurrentHoldMs() / 60000f);
                 good[i] = 0;

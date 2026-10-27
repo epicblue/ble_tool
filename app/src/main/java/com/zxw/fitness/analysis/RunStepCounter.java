@@ -93,9 +93,19 @@ public class RunStepCounter implements RepAnalyzer {
     @Override
     public void process(PoseFrame frame) {
         long now = frame == null ? System.currentTimeMillis() : frame.getTimestampMs();
+        // 即使画面中仍有人，双脚长时间缺失后也不能把恢复时的第一帧当作一步。
+        if (lastValidMs >= 0 && now - lastValidMs > DROPOUT_MS) {
+            lastSign = 0;
+            stableFrames = 0;
+            heldFrames = 0;
+            lastStepMs = -1;
+            intervalCount = 0;
+            intervalIndex = 0;
+            hipCount = 0;
+            hipIndex = 0;
+        }
         if (frame == null || !frame.isVisible()) {
             if (lastValidMs >= 0 && now - lastValidMs > DROPOUT_MS) {
-                lastSign = 0;
                 statusText = "未检测到人体";
             } else {
                 statusText = "识别不稳定";

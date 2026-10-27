@@ -100,6 +100,49 @@
             android:visibility="gone" />
     </LinearLayout>
 
+    <!-- 骨架诊断可在开始训练前查看；开关仅控制详细标记，不影响判定。 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:layout_marginLeft="16dp"
+        android:layout_marginTop="76dp"
+        android:layout_marginRight="16dp"
+        android:gravity="top"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/btnMarkerDetails"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/fit_bg_pill"
+            android:clickable="true"
+            android:focusable="true"
+            android:paddingLeft="10dp"
+            android:paddingTop="8dp"
+            android:paddingRight="10dp"
+            android:paddingBottom="8dp"
+            android:text="标记：开"
+            android:textColor="@color/fit_text"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/tvSceneDiagnosis"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginLeft="6dp"
+            android:layout_weight="1"
+            android:background="@drawable/fit_bg_pill"
+            android:maxLines="4"
+            android:paddingLeft="10dp"
+            android:paddingTop="6dp"
+            android:paddingRight="10dp"
+            android:paddingBottom="6dp"
+            android:text="等待骨架画面"
+            android:textColor="@color/fit_text"
+            android:textSize="11sp" />
+    </LinearLayout>
+
     <!-- 中间提示 -->
     <LinearLayout
         android:id="@+id/hintBox"
@@ -129,6 +172,22 @@
             android:lineSpacingExtra="3dp"
             android:text="把手机固定好，让全身进入画面，然后点击下方「开始」。"
             android:textColor="@color/fit_text_dim"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/btnDismissHint"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:background="@drawable/fit_bg_pill"
+            android:clickable="true"
+            android:focusable="true"
+            android:paddingLeft="10dp"
+            android:paddingTop="6dp"
+            android:paddingRight="10dp"
+            android:paddingBottom="6dp"
+            android:text="收起说明，查看骨架"
+            android:textColor="@color/fit_accent"
             android:textSize="12sp" />
     </LinearLayout>
 
