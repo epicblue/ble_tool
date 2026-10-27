@@ -40,6 +40,7 @@ import com.zxw.toolkit.ParseLeAdvData;
 import com.zxw.ui.BasActivity;
 import com.zxw.ui.Ble_Activity;
 import com.zxw.ui.DebugActivity;
+import com.zxw.fitness.ui.ExerciseListActivity;
 
 import java.io.UnsupportedEncodingException;
 import java.util.ArrayList;
@@ -141,6 +142,14 @@ public class MainActivity extends BasActivity implements OnClickListener {
             public boolean onLongClick(View v) {
                 startActivity(new Intent(MainActivity.this, DebugActivity.class));
                 return true;
+            }
+        });
+
+        // 进入体能训练（摄像头姿态捕捉）模块
+        findViewById(R.id.fitness_btn).setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                startActivity(new Intent(MainActivity.this, ExerciseListActivity.class));
             }
         });
 

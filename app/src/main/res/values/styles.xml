@@ -21,4 +21,36 @@
         <item name="android:button">@drawable/radio_button</item>
     </style>
 
+    <!-- 体能训练模块：深色无标题栏 -->
+    <style name="FitnessTheme" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/fit_bg</item>
+        <item name="android:statusBarColor">@color/fit_bg</item>
+        <item name="android:navigationBarColor">@color/fit_bg</item>
+        <item name="android:colorAccent">@color/fit_accent</item>
+        <item name="android:textColorPrimary">@color/fit_text</item>
+        <item name="android:textColorSecondary">@color/fit_text_dim</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+
+    <style name="FitCard">
+        <item name="android:background">@drawable/fit_bg_card</item>
+        <item name="android:padding">16dp</item>
+    </style>
+
+    <style name="FitChip">
+        <item name="android:background">@drawable/fit_bg_chip</item>
+        <item name="android:paddingLeft">14dp</item>
+        <item name="android:paddingRight">14dp</item>
+        <item name="android:paddingTop">8dp</item>
+        <item name="android:paddingBottom">8dp</item>
+        <item name="android:textColor">@color/fit_text_dim</item>
+        <item name="android:textSize">13sp</item>
+        <item name="android:gravity">center</item>
+    </style>
+
+    <style name="FitChipSelected" parent="FitChip">
+        <item name="android:background">@drawable/fit_bg_chip_selected</item>
+        <item name="android:textColor">@color/fit_accent</item>
+    </style>
+
 </resources>

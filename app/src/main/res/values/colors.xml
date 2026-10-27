@@ -3,4 +3,21 @@
     <color name="colorPrimary">#008577</color>
     <color name="colorPrimaryDark">#00574B</color>
     <color name="colorAccent">#D81B60</color>
+
+    <!-- 体能训练模块配色（深色运动风） -->
+    <color name="fit_bg">#0A1120</color>
+    <color name="fit_bg_deep">#060B14</color>
+    <color name="fit_surface">#131C2E</color>
+    <color name="fit_surface_alt">#1A2539</color>
+    <color name="fit_stroke">#24314A</color>
+    <color name="fit_accent">#4CE0B3</color>
+    <color name="fit_accent_dark">#14C69C</color>
+    <color name="fit_accent_soft">#334CE0B3</color>
+    <color name="fit_text">#F2F6FB</color>
+    <color name="fit_text_dim">#8FA2BC</color>
+    <color name="fit_text_faint">#5D6E86</color>
+    <color name="fit_warn">#FFB020</color>
+    <color name="fit_danger">#FF6B6B</color>
+    <color name="fit_black">#000000</color>
+    <color name="fit_transparent">#00000000</color>
 </resources>
