@@ -2,7 +2,7 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/fit_bg"
+    android:background="@color/history_bg"
     android:orientation="vertical">
 
     <LinearLayout
@@ -11,48 +11,63 @@
         android:gravity="center_vertical"
         android:orientation="horizontal"
         android:paddingLeft="16dp"
-        android:paddingTop="18dp"
+        android:paddingTop="12dp"
         android:paddingRight="16dp"
-        android:paddingBottom="10dp">
+        android:paddingBottom="6dp">
 
         <TextView
             android:id="@+id/btnBack"
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:background="@drawable/fit_bg_pill"
+            android:layout_height="48dp"
+            android:background="@drawable/history_bg_pill"
             android:clickable="true"
             android:focusable="true"
+            android:gravity="center"
             android:paddingLeft="14dp"
-            android:paddingTop="8dp"
             android:paddingRight="14dp"
-            android:paddingBottom="8dp"
             android:text="‹ 返回"
-            android:textColor="@color/fit_text"
+            android:textColor="@color/history_text"
             android:textSize="14sp" />
 
         <LinearLayout
             android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_marginLeft="14dp"
+            android:layout_marginLeft="12dp"
             android:layout_weight="1"
             android:orientation="vertical">
 
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="历史记录"
-                android:textColor="@color/fit_text"
+                android:text="成长星球"
+                android:textColor="@color/history_text"
                 android:textSize="20sp"
                 android:textStyle="bold" />
 
             <TextView
                 android:id="@+id/tvSubtitle"
-                android:layout_width="wrap_content"
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="全部记录"
-                android:textColor="@color/fit_text_dim"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:text="我的运动足迹"
+                android:textColor="@color/history_muted"
                 android:textSize="12sp" />
         </LinearLayout>
+
+        <TextView
+            android:id="@+id/btnSeeRecords"
+            android:layout_width="wrap_content"
+            android:layout_height="48dp"
+            android:clickable="true"
+            android:focusable="true"
+            android:gravity="center"
+            android:paddingLeft="8dp"
+            android:paddingRight="8dp"
+            android:text="看足迹 ↓"
+            android:textColor="@color/history_gold"
+            android:textSize="13sp"
+            android:textStyle="bold" />
     </LinearLayout>
 
     <HorizontalScrollView
@@ -61,7 +76,7 @@
         android:paddingLeft="16dp"
         android:paddingTop="4dp"
         android:paddingRight="16dp"
-        android:paddingBottom="10dp"
+        android:paddingBottom="8dp"
         android:scrollbars="none">
 
         <LinearLayout
@@ -71,45 +86,14 @@
             android:orientation="horizontal" />
     </HorizontalScrollView>
 
-    <FrameLayout
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/rvSessions"
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1">
-
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/rvSessions"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:clipToPadding="false"
-            android:paddingLeft="20dp"
-            android:paddingTop="4dp"
-            android:paddingRight="20dp"
-            android:paddingBottom="20dp" />
-
-        <LinearLayout
-            android:id="@+id/emptyBox"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:gravity="center"
-            android:orientation="vertical"
-            android:visibility="gone">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="🏃"
-                android:textSize="46sp" />
-
-            <TextView
-                android:id="@+id/tvEmpty"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:text="还没有训练记录\n完成一次训练就会出现在这里"
-                android:gravity="center"
-                android:lineSpacingExtra="4dp"
-                android:textColor="@color/fit_text_dim"
-                android:textSize="13sp" />
-        </LinearLayout>
-    </FrameLayout>
+        android:layout_weight="1"
+        android:clipToPadding="false"
+        android:paddingLeft="16dp"
+        android:paddingTop="4dp"
+        android:paddingRight="16dp"
+        android:paddingBottom="24dp" />
 </LinearLayout>

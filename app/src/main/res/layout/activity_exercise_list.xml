@@ -115,8 +115,10 @@
             android:layout_height="52dp"
             android:layout_weight="1"
             android:background="@drawable/fit_bg_button_dark"
+            android:clickable="true"
+            android:focusable="true"
             android:gravity="center"
-            android:text="📜  历史记录"
+            android:text="🌟  成长星球 · 历史记录"
             android:textColor="@color/fit_text"
             android:textSize="15sp" />
     </LinearLayout>

@@ -587,6 +587,7 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
             message.append(saved.isWallContact() ? "检测到贴墙支撑\n" : "未检测到明显贴墙\n");
         }
         message.append("时间：").append(TimeUtils.formatFriendly(saved.getStartedAt()));
+        message.append("\n\n🌟 这次的足迹已经保存，可以去成长星球看看。");
 
         new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_DARK)
                 .setTitle("训练完成")
@@ -597,6 +598,15 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
                         Intent intent = new Intent(TrainingActivity.this, ReplayActivity.class);
                         intent.putExtra(ReplayActivity.EXTRA_SESSION_ID, saved.getId());
                         intent.putExtra(ReplayActivity.EXTRA_USER_ID, saved.getUserId());
+                        startActivity(intent);
+                        finish();
+                    }
+                })
+                .setNeutralButton("成长星球", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        Intent intent = new Intent(TrainingActivity.this, HistoryActivity.class);
+                        intent.putExtra(HistoryActivity.EXTRA_USER_ID, saved.getUserId());
                         startActivity(intent);
                         finish();
                     }
