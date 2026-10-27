@@ -5,8 +5,9 @@ import java.util.Arrays;
 /**
  * 一帧人体关键点数据（与 Google ML Kit Pose 的 33 个关键点一一对应）。
  *
- * <p>坐标使用归一化图像坐标：x ∈ [0,1] 从左到右，y ∈ [0,1] 从上到下，z 约为相对深度。
- * 归一化坐标与画面方向无关，因此录像与骨架回放的尺寸可以不同。</p>
+ * <p>相机帧的 x、y、z 使用同一个基准（摆正后画面宽度）归一化：x 约为 0~1，
+ * y 约为 0~画面高/宽。这样 x/y 的几何尺度一致，角度不会因画面长宽比而失真。
+ * 旧版骨架文件保存的是原始像素坐标，读取时保留原值以兼容旧记录。</p>
  */
 public class PoseFrame {
 
@@ -110,6 +111,26 @@ public class PoseFrame {
             }
         }
         return new PoseFrame(timestampMs, any, x, y, z, confidence);
+    }
+
+    /** ML Kit 的坐标单位是像素；统一按画面宽度缩放，不能分别除宽和高。 */
+    public static PoseFrame fromPixelCoordinates(long timestampMs, float[] x, float[] y, float[] z,
+                                                 float[] confidence, int sourceWidth) {
+        if (sourceWidth <= 0 || x.length < LANDMARK_COUNT || y.length < LANDMARK_COUNT
+                || z.length < LANDMARK_COUNT || confidence.length < LANDMARK_COUNT) {
+            throw new IllegalArgumentException("需要有效的画面宽度与完整关键点");
+        }
+        float[] nx = new float[LANDMARK_COUNT];
+        float[] ny = new float[LANDMARK_COUNT];
+        float[] nz = new float[LANDMARK_COUNT];
+        float[] nc = new float[LANDMARK_COUNT];
+        for (int i = 0; i < LANDMARK_COUNT; i++) {
+            nx[i] = x[i] / sourceWidth;
+            ny[i] = y[i] / sourceWidth;
+            nz[i] = z[i] / sourceWidth;
+            nc[i] = confidence[i];
+        }
+        return of(timestampMs, nx, ny, nz, nc);
     }
 
     public long getTimestampMs() {

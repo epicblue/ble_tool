@@ -22,6 +22,7 @@ import com.zxw.fitness.data.SessionStore;
 import com.zxw.fitness.data.UserStore;
 import com.zxw.fitness.model.Session;
 import com.zxw.fitness.model.UserProfile;
+import com.zxw.fitness.model.PersonalCalibration;
 import com.zxw.fitness.util.TimeUtils;
 
 import java.util.ArrayList;
@@ -56,6 +57,10 @@ public class ProfileActivity extends Activity {
             }
         });
 
+        findViewById(R.id.btnCalibrationSettings).setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { showCalibrations(); }
+        });
+
         recyclerView = findViewById(R.id.rvUsers);
         recyclerView.setLayoutManager(new LinearLayoutManager(this));
         adapter = new UserAdapter();
@@ -73,6 +78,49 @@ public class ProfileActivity extends Activity {
         users.addAll(UserStore.loadAll(this));
         currentId = UserStore.getCurrent(this).getId();
         adapter.notifyDataSetChanged();
+    }
+
+    private void showCalibrations() {
+        final UserProfile current = UserStore.getCurrent(this);
+        final List<PersonalCalibration> settings = current.getCalibrations();
+        if (settings.isEmpty()) {
+            new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_DARK)
+                    .setTitle(current.getName() + " · 个人校准")
+                    .setMessage("尚未设置个人目标。开始俯卧撑、折凳俯卧撑、深蹲或引体向上后，"
+                            + "保持在当前能做到的最好位置，点击训练页的「个人校准 +1」。")
+                    .setPositiveButton("知道了", null).show();
+            return;
+        }
+        String[] labels = new String[settings.size()];
+        for (int i = 0; i < settings.size(); i++) {
+            labels[i] = settings.get(i).getTitle();
+        }
+        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_DARK)
+                .setTitle(current.getName() + " · 个人校准")
+                .setItems(labels, new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface dialog, int which) {
+                        showCalibrationDetails(current, settings.get(which));
+                    }
+                })
+                .setNegativeButton("关闭", null).show();
+    }
+
+    private void showCalibrationDetails(final UserProfile profile, final PersonalCalibration calibration) {
+        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_DARK)
+                .setTitle(calibration.getTitle())
+                .setMessage(calibration.describe() + "\n\n个人目标仅表示你确认的当前能力，"
+                        + "并不代表标准或安全姿势。如有不适请停止训练。"
+                        + "\n\n恢复默认只影响以后的训练，历史回放保留当时的目标。")
+                .setPositiveButton("恢复默认", new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface dialog, int which) {
+                        boolean ok = UserStore.clearCalibration(ProfileActivity.this, profile.getId(),
+                                calibration.getType(), calibration.getVariant());
+                        Toast.makeText(ProfileActivity.this, ok ? "已恢复默认目标" : "保存失败，请重试",
+                                Toast.LENGTH_SHORT).show();
+                        reload();
+                    }
+                })
+                .setNegativeButton("关闭", null).show();
     }
 
     private void showAddUserDialog() {
@@ -158,7 +206,7 @@ public class ProfileActivity extends Activity {
     private void confirmDelete(final UserProfile user) {
         new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_DARK)
                 .setTitle("删除账号")
-                .setMessage("将同时删除「" + user.getName() + "」的全部训练记录、视频与骨架数据，且无法恢复。")
+                .setMessage("将同时删除「" + user.getName() + "」的全部个人校准、训练记录、视频与骨架数据，且无法恢复。")
                 .setPositiveButton("删除", new DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(DialogInterface dialog, int which) {

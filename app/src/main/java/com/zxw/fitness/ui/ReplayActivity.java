@@ -204,8 +204,9 @@ public class ReplayActivity extends Activity {
 
         poseLog = PoseLog.load(SessionStore.resolveMedia(this, session.getUserId(),
                 session.getPoseFile()));
+        overlay.setPixelCoordinates(poseLog != null && poseLog.isLegacyPixelCoordinates());
         timeline = poseLog != null && !poseLog.isEmpty()
-                ? ReplayTimeline.build(poseLog.getFrames(), type, session.getVariant())
+                ? ReplayTimeline.build(poseLog.getFrames(), session)
                 : null;
 
         File video = SessionStore.resolveMedia(this, session.getUserId(), session.getVideoFile());
@@ -219,7 +220,8 @@ public class ReplayActivity extends Activity {
         String stability = Float.isNaN(session.getStability())
                 ? "" : " · 稳定度 " + Math.round(session.getStability() * 100) + "%";
         tvSubtitle.setText(TimeUtils.formatFriendly(session.getStartedAt())
-                + " · 成绩 " + resultText(session) + stability);
+                + " · 成绩 " + resultText(session) + stability
+                + (session.hasPersonalCalibration() ? " · 个人目标" : ""));
         tvUnit.setText(type.getUnitLabel());
 
         btnPrev.setVisibility(playlistIndex > 0 ? View.VISIBLE : View.GONE);
@@ -342,7 +344,7 @@ public class ReplayActivity extends Activity {
         if (timeline != null && timeline.size() > 0) {
             int index = timeline.indexAt(timeMs);
             if (index >= 0 && poseLog != null && index < poseLog.getFrames().size()) {
-                PoseFrame frame = poseLog.getFrames().get(index);
+                PoseFrame frame = poseLog.getDisplayFrames().get(index);
                 overlay.setFrame(frame);
             }
             int good = timeline.getGoodRepsAt(index);

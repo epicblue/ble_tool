@@ -1,5 +1,10 @@
 package com.zxw.fitness.model;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 /**
  * 训练账号。数据按账号隔离，切换账号即可看到各自的训练与历史记录。
  */
@@ -12,6 +17,7 @@ public class UserProfile {
     private String name;
     private final long createdAt;
     private final String avatar; // 一个 emoji，作为头像
+    private final Map<String, PersonalCalibration> calibrations = new LinkedHashMap<>();
 
     public UserProfile(String id, String name, long createdAt, String avatar) {
         this.id = id;
@@ -38,6 +44,24 @@ public class UserProfile {
 
     public String getAvatar() {
         return avatar;
+    }
+
+    public PersonalCalibration getCalibration(ExerciseType type, String variant) {
+        return calibrations.get(PersonalCalibration.key(type, variant));
+    }
+
+    public List<PersonalCalibration> getCalibrations() {
+        return new ArrayList<>(calibrations.values());
+    }
+
+    public void setCalibration(PersonalCalibration calibration) {
+        if (calibration != null && calibration.isValid()) {
+            calibrations.put(calibration.getKey(), calibration);
+        }
+    }
+
+    public void clearCalibration(ExerciseType type, String variant) {
+        calibrations.remove(PersonalCalibration.key(type, variant));
     }
 
     /** 是否是可以删除的普通账号（默认账号不可删除）。 */

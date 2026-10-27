@@ -2,7 +2,13 @@ package com.zxw.fitness.analysis;
 
 import com.zxw.fitness.model.ExerciseType;
 import com.zxw.fitness.model.PoseFrame;
+import com.zxw.fitness.model.Session;
+import com.zxw.fitness.model.CalibrationChange;
+import com.zxw.fitness.model.PersonalCalibration;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 
 /**
@@ -35,6 +41,18 @@ public class ReplayTimeline {
     }
 
     public static ReplayTimeline build(List<PoseFrame> frames, ExerciseType type, String variant) {
+        return build(frames, type, variant, null, Collections.emptyList());
+    }
+
+    /** 老记录没有校准数据时仍按默认标准回放。 */
+    public static ReplayTimeline build(List<PoseFrame> frames, Session session) {
+        return build(frames, session.getExerciseType(), session.getVariant(),
+                session.getInitialCalibration(), session.getCalibrationChanges());
+    }
+
+    private static ReplayTimeline build(List<PoseFrame> frames, ExerciseType type, String variant,
+                                        PersonalCalibration initial,
+                                        List<CalibrationChange> changes) {
         int size = frames.size();
         long[] times = new long[size];
         float[] score = new float[size];
@@ -64,6 +82,16 @@ public class ReplayTimeline {
             repAnalyzer = new PushUpCounter(type, variant, null);
         }
 
+        PersonalCalibrationAnalyzer calibrated = repAnalyzer instanceof PersonalCalibrationAnalyzer
+                ? (PersonalCalibrationAnalyzer) repAnalyzer : null;
+        if (calibrated != null) calibrated.setPersonalCalibration(initial);
+        List<CalibrationChange> events = new ArrayList<>(changes);
+        Collections.sort(events, new Comparator<CalibrationChange>() {
+            @Override public int compare(CalibrationChange a, CalibrationChange b) {
+                return Integer.compare(a.frameIndex, b.frameIndex);
+            }
+        });
+        int nextEvent = 0;
         long duration = 0;
         for (int i = 0; i < size; i++) {
             PoseFrame frame = frames.get(i);
@@ -71,6 +99,12 @@ public class ReplayTimeline {
             duration = Math.max(duration, times[i]);
             if (repAnalyzer != null) {
                 repAnalyzer.process(frame);
+                while (nextEvent < events.size() && events.get(nextEvent).frameIndex <= i) {
+                    if (calibrated != null) {
+                        calibrated.applyCalibrationEvent(events.get(nextEvent).calibration);
+                    }
+                    nextEvent++;
+                }
                 int goodNow = repAnalyzer.getGoodReps();
                 int badNow = repAnalyzer.getBadReps();
                 score[i] = type == ExerciseType.BAD_PUSHUP ? badNow : goodNow;

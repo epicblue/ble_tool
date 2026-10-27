@@ -47,7 +47,7 @@
         android:layout_marginLeft="20dp"
         android:layout_marginRight="20dp"
         android:layout_marginBottom="12dp"
-        android:text="不同使用者的训练记录彼此独立。点击账号即可切换，长按可重命名或删除。"
+        android:text="不同使用者的训练记录与个人目标彼此独立。点击账号切换，长按可重命名或删除。"
         android:textColor="@color/fit_text_dim"
         android:textSize="12sp" />
 
@@ -61,6 +61,20 @@
         android:paddingTop="4dp"
         android:paddingRight="20dp"
         android:paddingBottom="12dp" />
+
+    <TextView
+        android:id="@+id/btnCalibrationSettings"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:layout_marginLeft="20dp"
+        android:layout_marginRight="20dp"
+        android:background="@drawable/fit_bg_button_dark"
+        android:clickable="true"
+        android:focusable="true"
+        android:gravity="center"
+        android:text="当前账号 · 个人校准设置"
+        android:textColor="@color/fit_text"
+        android:textSize="14sp" />
 
     <LinearLayout
         android:layout_width="match_parent"

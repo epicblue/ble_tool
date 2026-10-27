@@ -57,11 +57,14 @@ public class CameraController {
         /**
          * 每识别一帧回调一次。
          *
-         * @param frame        33 个归一化关键点
+         * @param frame        重力对齐后的 33 个关键点，供判定与录制
+         * @param displayFrame 未旋转的关键点，供与预览画面对齐
          * @param uprightWidth 摆正后画面宽度（像素）
          * @param uprightHeight 摆正后画面高度（像素）
+         * @param rollDegrees  本帧施加的重力补偿角，供回放恢复画面坐标
          */
-        void onPose(@NonNull PoseFrame frame, int uprightWidth, int uprightHeight);
+        void onPose(@NonNull PoseFrame frame, @NonNull PoseFrame displayFrame,
+                    int uprightWidth, int uprightHeight, float rollDegrees);
 
         void onCameraError(@NonNull String message);
 
@@ -408,15 +411,18 @@ public class CameraController {
                     .addOnSuccessListener(new com.google.android.gms.tasks.OnSuccessListener<Pose>() {
                         @Override
                         public void onSuccess(Pose pose) {
-                            // 横滚补偿：手机歪着拿时把关键点转正，判定与录制的骨架都在这套坐标里
-                            PoseFrame frame = GravityAlign.align(toPoseFrame(pose, timestampMs),
-                                    rollDegrees);
                             int w = rotation % 180 == 0 ? imageWidth : imageHeight;
                             int h = rotation % 180 == 0 ? imageHeight : imageWidth;
+                            // ML Kit 返回像素；x/y 同除以画面宽，既便于显示又保留真实角度。
+                            PoseFrame displayFrame = toPoseFrame(pose, timestampMs, w);
+                            float roll = rollDegrees;
+                            PoseFrame frame = Math.abs(roll) < GravityAlign.DEAD_ZONE_DEG
+                                    ? displayFrame : GravityAlign.rotate(displayFrame, roll,
+                                    0.5f, h / (2f * Math.max(1, w)));
                             uprightWidth = w;
                             uprightHeight = h;
                             if (listener != null) {
-                                listener.onPose(frame, w, h);
+                                listener.onPose(frame, displayFrame, w, h, roll);
                             }
                         }
                     })
@@ -435,7 +441,7 @@ public class CameraController {
         }
     }
 
-    private static PoseFrame toPoseFrame(Pose pose, long timestampMs) {
+    private static PoseFrame toPoseFrame(Pose pose, long timestampMs, int imageWidth) {
         if (pose == null) {
             return PoseFrame.empty(timestampMs);
         }
@@ -459,6 +465,7 @@ public class CameraController {
             z[type] = position3D != null ? position3D.getZ() : 0f;
             confidence[type] = landmark.getInFrameLikelihood();
         }
-        return PoseFrame.of(timestampMs, x, y, z, confidence);
+        return PoseFrame.fromPixelCoordinates(timestampMs, x, y, z, confidence,
+                Math.max(1, imageWidth));
     }
 }

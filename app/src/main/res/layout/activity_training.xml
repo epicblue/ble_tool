@@ -213,6 +213,15 @@
             android:textColor="@color/fit_text_dim"
             android:textSize="12sp" />
 
+        <TextView
+            android:id="@+id/tvCalibration"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:textColor="@color/fit_accent"
+            android:textSize="12sp"
+            android:visibility="gone" />
+
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -230,6 +239,21 @@
                 android:textColor="#06231C"
                 android:textSize="16sp"
                 android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/btnCalibrate"
+                android:layout_width="0dp"
+                android:layout_height="52dp"
+                android:layout_weight="1"
+                android:background="@drawable/fit_bg_button_dark"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center"
+                android:text="个人校准 +1"
+                android:textColor="@color/fit_text"
+                android:textSize="15sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
 
             <TextView
                 android:id="@+id/btnFinish"

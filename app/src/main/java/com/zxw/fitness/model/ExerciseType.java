@@ -111,6 +111,12 @@ public enum ExerciseType {
         return timer;
     }
 
+    /** 支持以一次往返的个人幅度作为目标；计时和步数动作暂不使用此校准。 */
+    public boolean supportsPersonalCalibration() {
+        return this == PUSHUP || this == CHAIR_PUSHUP || this == BAD_PUSHUP
+                || this == SQUAT || this == PULLUP;
+    }
+
     /** 是否为靠墙类动作（需要额外的墙面判定）。 */
     public boolean isWallExercise() {
         return wall;

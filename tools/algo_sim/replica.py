@@ -192,6 +192,24 @@ class HoldClock:
         return max(0, self.wall_ms(now) - self.valid)
 
 
+# 连续三帧确认起始极值，与 Java StableExtremum 一致。
+class StableExtremum:
+    def __init__(self, maximum):
+        self.maximum = maximum; self.values = []; self.best = float('nan')
+
+    def clear(self):
+        self.values = []
+
+    def observe(self, value):
+        if not math.isfinite(value):
+            self.clear(); return self.best
+        self.values = (self.values + [value])[-3:]
+        if len(self.values) == 3:
+            stable = min(self.values) if self.maximum else max(self.values)
+            self.best = stable if math.isnan(self.best) else (max(self.best, stable) if self.maximum else min(self.best, stable))
+        return self.best
+
+
 # ---------------- PushUpCounter ----------------
 class PushUp:
     TOP = 152.0; DEPTH = 100.0; PARTIAL = 122.0
@@ -208,31 +226,49 @@ class PushUp:
         self.rep_straight = True; self.rep_kneeling = False
         self.good = 0; self.bad = 0; self.form = 0
         self.last_valid = None; self.events = []; self.status = 'wait'
+        self.personal = None; self.observed_top_angle = float('nan'); self.observed_top_drop = float('nan')
+        self.await_top = False; self.sample = None; self.rep_min_hip = float('nan')
+        self.top_angle_samples = StableExtremum(True); self.top_drop_samples = StableExtremum(True)
+
+    def clear_calibration_samples(self):
+        self.top_angle_samples.clear(); self.top_drop_samples.clear()
 
     def depth_angle(self):
         return self.DEPTH + 6 if (self.type == 'chair_pushup' and self.variant == 'hands') else self.DEPTH
 
     def partial_angle(self):
-        return max(self.depth_angle() + 8, self.PARTIAL)
+        return self.PARTIAL + 6 if (self.type == 'chair_pushup' and self.variant == 'hands') else self.PARTIAL
+
+    def angle_top(self):
+        return self.TOP if self.personal is None else self.personal['start']
+
+    def angle_reference(self):
+        return self.depth_angle() if self.personal is None else min(self.depth_angle(), self.personal['start'] - 20)
 
     def process(self, f):
+        self.sample = None
         now = f.ts
         if not f.visible():
-            self.dropout(now); return
+            self.clear_calibration_samples(); self.dropout(now); return
         m = body_metrics(f)
         if not m.valid:
-            self.dropout(now); return
+            self.clear_calibration_samples(); self.dropout(now); return
         self.last_valid = now
         elbow = avg_angle(f, LS, LE, LW, RS, RE, RW)
         th = torso_horizontal(m)
         prone = not math.isnan(th) and th < self.MAX_TORSO_H
         hands = not math.isnan(m.wrist_drop) and m.wrist_drop > self.MIN_WRIST_DROP
         if not prone or not hands:
-            self.drop_phase(); self.status = 'not pushup'; return
-        elbow_top = math.isnan(elbow) or elbow >= self.TOP - 6
+            self.clear_calibration_samples(); self.drop_phase(); self.status = 'not pushup'; return
+        if math.isnan(elbow):
+            self.clear_calibration_samples()
+        else:
+            self.observed_top_angle = self.top_angle_samples.observe(elbow)
+            self.observed_top_drop = self.top_drop_samples.observe(m.wrist_drop)
+        elbow_top = math.isnan(elbow) or elbow >= self.angle_top() - 6
         if elbow_top and not math.isnan(m.wrist_drop):
             self.top_drop = m.wrist_drop if math.isnan(self.top_drop) else max(self.top_drop, m.wrist_drop)
-        depth_by_angle = float('nan') if math.isnan(elbow) else clamp((self.TOP - elbow) / (self.TOP - self.depth_angle()), 0, 1.25)
+        depth_by_angle = float('nan') if math.isnan(elbow) else clamp((self.angle_top() - elbow) / (self.angle_top() - self.angle_reference()), 0, 1.25 if self.personal is None else 5.0)
         depth_by_drop = self.drop_depth(m.wrist_drop)
         # 两个深度信号都是"镜头斜对时的下限"：关节角被透视缩短会低估，
         # 手腕位移是沿重力方向量的、与横向透视无关，因此直接取两者较大值。
@@ -253,13 +289,27 @@ class PushUp:
         straight = straight_by_ratio and straight_by_angle
         knee = avg_angle(f, LH, LK, LA, RH, RK, RA)
         kneeling = (not math.isnan(knee)) and knee < self.KNEEL
-
+        candidate_drop = self.drop_depth(m.wrist_drop, self.observed_top_drop)
+        candidate_angle = float('nan') if math.isnan(elbow) or math.isnan(self.observed_top_angle) else clamp(
+            (self.observed_top_angle - elbow) / (self.observed_top_angle - min(self.depth_angle(), self.observed_top_angle - 20)), 0, 5.0)
+        score = self.personal_depth(candidate_angle, candidate_drop)
+        if all(not math.isnan(v) for v in (elbow, candidate_drop, m.sag_ratio, hip_angle, knee)):
+            self.sample = (score, candidate_drop, sag, hip_angle, kneeling, straight and not kneeling, elbow)
+        if self.await_top:
+            if depth <= self.TOP_DEPTH:
+                self.await_top = False; self.drop_phase(); self.status = 'up'
+            else:
+                self.status = 'calibrated, return to top'
+            return
         if not self.down:
-            if depth > self.DOWN_START:
+            start = self.DOWN_START if self.personal is None else max(
+                self.TOP_DEPTH + 0.02, min(self.DOWN_START, self.personal['target'] * 0.5))
+            if depth > start:
                 self.down = True; self.down_start = now
                 self.rep_max_depth = depth; self.rep_min_elbow = elbow
                 self.rep_max_drop = 0.0 if math.isnan(depth_by_drop) else depth_by_drop
                 self.rep_max_sag = sag; self.rep_straight = straight; self.rep_kneeling = kneeling
+                self.rep_min_hip = hip_angle if m.view == 'SIDE' else float('nan')
             else:
                 self.status = 'up'; return
         else:
@@ -269,6 +319,8 @@ class PushUp:
             if not math.isnan(depth_by_drop):
                 self.rep_max_drop = max(self.rep_max_drop, depth_by_drop)
             self.rep_max_sag = max(self.rep_max_sag, sag)
+            if m.view == 'SIDE' and not math.isnan(hip_angle):
+                self.rep_min_hip = hip_angle if math.isnan(self.rep_min_hip) else min(self.rep_min_hip, hip_angle)
             if not straight: self.rep_straight = False
             if kneeling: self.rep_kneeling = True
         if depth <= self.TOP_DEPTH:
@@ -277,35 +329,80 @@ class PushUp:
         else:
             self.status = 'down'
 
-    def drop_depth(self, wd):
-        if math.isnan(wd) or math.isnan(self.top_drop) or self.top_drop <= self.MIN_WRIST_DROP:
+    def drop_depth(self, wd, baseline=None):
+        baseline = self.top_drop if baseline is None else baseline
+        if math.isnan(wd) or math.isnan(baseline) or baseline <= self.MIN_WRIST_DROP:
             return float('nan')
-        travel = self.top_drop * 0.72
-        return clamp((self.top_drop - wd) / max(0.02, travel), 0, 1.25)
+        travel = baseline * 0.72
+        return clamp((baseline - wd) / max(0.02, travel), 0, 1.25)
+
+    @classmethod
+    def personal_depth(cls, angle_depth, drop_depth):
+        return max(0.0 if math.isnan(angle_depth) else angle_depth,
+                   0.0 if math.isnan(drop_depth) else drop_depth / cls.FULL_DEPTH)
+
+    def capture(self, raw):
+        if self.await_top or math.isnan(self.observed_top_angle) or math.isnan(self.observed_top_drop) or self.sample is None:
+            return None
+        m = body_metrics(raw)
+        raw_elbow = avg_angle(raw, LS, LE, LW, RS, RE, RW)
+        raw_hip = avg_angle(raw, LS, LH, LA, RS, RH, RA)
+        raw_knee = avg_angle(raw, LH, LK, LA, RH, RK, RA)
+        if not m.valid or any(math.isnan(v) for v in (m.sag_ratio, raw_elbow, raw_hip, raw_knee)):
+            return None
+        depth, drop, sag, hip, kneel, standard, elbow = self.sample
+        raw_drop = self.drop_depth(m.wrist_drop, self.observed_top_drop)
+        if (math.isnan(raw_drop) or abs(raw_elbow - elbow) > 12 or abs(raw_drop - drop) > .20 or
+                abs(m.sag_ratio - sag) > .15 or abs(raw_hip - hip) > 20 or (raw_knee < self.KNEEL) != kneel):
+            return None
+        if depth < 0.18:
+            return None
+        return dict(type=self.type, variant=self.variant, start=self.observed_top_angle,
+                    target=clamp(depth * 0.95, 0.15, 5.0), angle=elbow, movement=drop,
+                    max_form=max(self.SAG_LIMIT, sag + 0.03), min_hip=min(self.HIP_STRAIGHT, max(0, hip - 4)),
+                    min_movement=0, kneel=kneel, form_warning=not standard)
+
+    def apply_event(self, calibration):
+        if calibration is None or calibration['type'] != self.type or calibration['variant'] != self.variant:
+            return
+        self.personal = calibration
+        if not math.isnan(self.observed_top_drop): self.top_drop = self.observed_top_drop
+        self.drop_phase(); self.await_top = True
+        if self.type == 'bad_pushup':
+            self.bad += 1; self.form += 1
+        else:
+            self.good += 1
+            if calibration['form_warning']: self.form += 1
 
     def finish(self, dur):
         me, md = self.rep_min_elbow, self.rep_max_drop
-        straight, kneeling, sag = self.rep_straight, self.rep_kneeling, self.rep_max_sag
-        self.down = False
-        self.rep_max_depth = 0.0; self.rep_min_elbow = float('nan'); self.rep_max_drop = 0.0
-        self.rep_max_sag = 0.0; self.rep_straight = True; self.rep_kneeling = False
+        straight, kneeling, sag, min_hip = self.rep_straight, self.rep_kneeling, self.rep_max_sag, self.rep_min_hip
+        self.drop_phase()
         if dur < self.MIN_REP:
             return
-        deep = ((not math.isnan(me)) and me <= self.depth_angle()) or md >= self.FULL_DEPTH
+        standard_depth = ((not math.isnan(me)) and me <= self.depth_angle()) or md >= self.FULL_DEPTH
+        standard_form = straight and not kneeling
+        angle_depth = float('nan') if math.isnan(me) else clamp((self.angle_top() - me) / (self.angle_top() - self.angle_reference()), 0, 1.25 if self.personal is None else 5.0)
+        reached = self.personal_depth(angle_depth, md)
+        deep = standard_depth if self.personal is None else reached >= self.personal['target']
         moved = ((not math.isnan(me)) and me <= self.partial_angle()) or md >= self.PARTIAL_DEPTH
-        reason = None
-        if kneeling: reason = 'kneel'
-        elif not straight: reason = 'sag'
-        elif not deep: reason = 'shallow'
-        if (not straight) or kneeling:
-            self.bad += 1; self.form += 1
-        elif deep:
-            self.good += 1
-        elif moved:
+        moved = moved or (self.personal is not None and reached >= self.personal['target'] * 0.65)
+        form_ok = standard_form if self.personal is None else (
+            sag <= self.personal['max_form'] and
+            (math.isnan(min_hip) or min_hip >= self.personal['min_hip']) and
+            (not kneeling or self.personal['kneel']))
+        reason = None if form_ok and deep else ('form' if not form_ok else 'shallow')
+        count_bad = not form_ok or not deep
+        if self.personal is not None and self.type == 'bad_pushup' and deep and form_ok and (not standard_form or not standard_depth):
+            count_bad = True; reason = 'personal bad'
+        if count_bad:
+            if not moved and form_ok:
+                return
             self.bad += 1; self.form += 1
         else:
-            return
-        self.events.append((reason is None, reason, round(me, 1) if not math.isnan(me) else None))
+            self.good += 1
+            if self.personal is not None and not standard_form: self.form += 1
+        self.events.append((not count_bad, reason, round(me, 1) if not math.isnan(me) else None))
 
     def dropout(self, now):
         if self.last_valid is None:
@@ -318,6 +415,7 @@ class PushUp:
     def drop_phase(self):
         self.down = False; self.rep_max_depth = 0.0; self.rep_min_elbow = float('nan')
         self.rep_max_drop = 0.0; self.rep_max_sag = 0.0; self.rep_straight = True; self.rep_kneeling = False
+        self.rep_min_hip = float('nan')
 
 
 def clamp(v, lo, hi):
@@ -536,30 +634,50 @@ class Squat:
         self.down = False; self.down_start = 0; self.rep_min_knee = float('nan')
         self.rep_max_lean = 0.0; self.rep_max_travel = 0.0
         self.good = 0; self.bad = 0; self.form = 0; self.last_valid = None; self.status = ''
+        self.personal = None; self.observed_stand_knee = float('nan'); self.observed_stand_hip = float('nan')
+        self.await_stand = False; self.sample = None
+        self.stand_knee_samples = StableExtremum(True); self.stand_hip_samples = StableExtremum(False)
+
+    def clear_calibration_samples(self):
+        self.stand_knee_samples.clear(); self.stand_hip_samples.clear()
 
     def process(self, f):
+        self.sample = None
         now = f.ts
         if not f.visible():
-            self.last_valid = self.last_valid; return
+            self.clear_calibration_samples(); self.last_valid = self.last_valid; return
         m = body_metrics(f)
         if not m.valid:
-            return
+            self.clear_calibration_samples(); return
         self.last_valid = now
         hip_below = m.hy > m.sy + 0.02
         ankle_below = (not m.has_ankle) or (m.ankle_y > m.hy - 0.02)
         if not hip_below or not ankle_below:
-            self.down = False; self.status = 'not standing'; return
+            self.clear_calibration_samples(); self.down = False; self.status = 'not standing'; return
         knee = avg_angle(f, LH, LK, LA, RH, RK, RA)
         if math.isnan(knee):
-            return
+            self.clear_calibration_samples(); return
         self.sm_knee = knee if math.isnan(self.sm_knee) else self.sm_knee + self.SMOOTH * (knee - self.sm_knee)
         self.sm_hip = m.hy if math.isnan(self.sm_hip) else self.sm_hip + self.SMOOTH * (m.hy - self.sm_hip)
-        if knee >= self.STAND:
+        self.observed_stand_knee = self.stand_knee_samples.observe(knee)
+        self.observed_stand_hip = self.stand_hip_samples.observe(self.sm_hip)
+        if knee >= self.stand_threshold():
             self.stand_hip = self.sm_hip if math.isnan(self.stand_hip) else min(self.stand_hip, self.sm_hip)
         travel = 0.0 if math.isnan(self.stand_hip) else (self.sm_hip - self.stand_hip) / max(0.04, m.body_scale)
         lean = math.degrees(math.atan2(abs(m.sx - m.hx), abs(m.sy - m.hy) + 1e-5))
+        if m.has_ankle and not math.isnan(self.observed_stand_hip):
+            candidate_travel = (self.sm_hip - self.observed_stand_hip) / max(0.04, m.body_scale)
+            self.sample = (knee, candidate_travel, lean)
+        if self.await_stand:
+            if self.sm_knee >= self.stand_threshold():
+                self.await_stand = False; self.down = False; self.status = 'stand'
+            else:
+                self.status = 'calibrated, return to stand'
+            return
         if not self.down:
-            if self.sm_knee < self.START:
+            started = (self.sm_knee < self.START if self.personal is None else
+                       self.depth_score(self.sm_knee, travel, self.personal['start']) >= max(0.10, self.personal['target'] * 0.5))
+            if started:
                 self.down = True; self.down_start = now; self.rep_min_knee = knee
                 self.rep_max_lean = lean; self.rep_max_travel = travel
             else:
@@ -568,12 +686,44 @@ class Squat:
             self.rep_min_knee = min(self.rep_min_knee, knee)
             self.rep_max_lean = max(self.rep_max_lean, lean)
             self.rep_max_travel = max(self.rep_max_travel, travel)
-        if self.sm_knee >= self.STAND:
+        if self.sm_knee >= self.stand_threshold():
             if self.down:
                 self.finish(now - self.down_start)
             self.status = 'stand'
         else:
             self.status = 'down'
+
+    def stand_threshold(self):
+        return self.STAND if self.personal is None else self.personal['start'] - 2
+
+    @classmethod
+    def depth_score(cls, knee, travel, start):
+        reference = min(cls.DEPTH, start - 20)
+        angle = 0.0 if math.isnan(knee) else max(0, (start - knee) / (start - reference))
+        return max(angle, max(0, travel) / cls.HIP_TRAVEL_DEEP)
+
+    def capture(self, raw):
+        if self.await_stand or math.isnan(self.observed_stand_knee) or self.sample is None:
+            return None
+        m = body_metrics(raw); raw_knee = avg_angle(raw, LH, LK, LA, RH, RK, RA)
+        if not m.valid or not m.has_ankle or math.isnan(raw_knee): return None
+        knee, travel, lean = self.sample
+        raw_travel = (m.hy - self.observed_stand_hip) / max(0.04, m.body_scale)
+        raw_lean = math.degrees(math.atan2(abs(m.sx - m.hx), abs(m.sy - m.hy) + 1e-5))
+        if abs(raw_knee - knee) > 12 or abs(raw_travel - travel) > .15 or abs(raw_lean - lean) > 15: return None
+        score = self.depth_score(knee, travel, self.observed_stand_knee)
+        if score < 0.18 or travel < 0.04: return None
+        return dict(type='squat', variant='', start=self.observed_stand_knee, target=clamp(score * 0.95, 0.15, 5.0),
+                    angle=knee, movement=travel, max_form=max(self.MAX_LEAN, lean + 3), min_hip=0,
+                    min_movement=min(self.MIN_TRAVEL, max(0.03, travel * 0.8)), kneel=False,
+                    form_warning=lean > self.MAX_LEAN)
+
+    def apply_event(self, calibration):
+        if calibration is None or calibration['type'] != 'squat': return
+        self.personal = calibration
+        if not math.isnan(self.observed_stand_hip): self.stand_hip = self.observed_stand_hip
+        self.down = False; self.await_stand = True; self.good += 1
+        if calibration['form_warning']: self.form += 1
 
     def finish(self, dur):
         mk, ml, tr = self.rep_min_knee, self.rep_max_lean, self.rep_max_travel
@@ -581,10 +731,13 @@ class Squat:
         if dur < self.MIN_REP:
             return
         # 膝角（侧对最准）+ 髋部下移比例（正对/斜对都可靠），取较大者
-        deep = (mk <= self.DEPTH) or (tr >= self.HIP_TRAVEL_DEEP)
-        moved = (mk <= self.PARTIAL) or (tr >= self.HIP_TRAVEL_PARTIAL)
-        hip_moved = tr >= self.MIN_TRAVEL
-        lean_ok = ml <= self.MAX_LEAN
+        standard_depth = (mk <= self.DEPTH) or (tr >= self.HIP_TRAVEL_DEEP)
+        reached = self.depth_score(mk, tr, self.STAND if self.personal is None else self.personal['start'])
+        deep = standard_depth if self.personal is None else reached >= self.personal['target']
+        moved = ((mk <= self.PARTIAL) or (tr >= self.HIP_TRAVEL_PARTIAL) or
+                 (self.personal is not None and reached >= self.personal['target'] * 0.65))
+        hip_moved = tr >= (self.MIN_TRAVEL if self.personal is None else self.personal['min_movement'])
+        lean_ok = ml <= (self.MAX_LEAN if self.personal is None else self.personal['max_form'])
         if not hip_moved:
             return
         if (not lean_ok) or (not deep):
@@ -593,6 +746,7 @@ class Squat:
             self.bad += 1; self.form += 1
         else:
             self.good += 1
+            if self.personal is not None and ml > self.MAX_LEAN: self.form += 1
 
 
 # ---------------- 引体向上 ----------------
@@ -604,42 +758,91 @@ class PullUp:
         self.sm = float('nan'); self.hang_reach = float('nan')
         self.pull = False; self.pull_start = 0; self.rep_min = float('nan'); self.rep_max_rise = 0.0
         self.good = 0; self.bad = 0; self.form = 0; self.status = ''
+        self.personal = None; self.observed_hang_angle = float('nan'); self.observed_hang_reach = float('nan')
+        self.await_hang = False; self.sample = None
+        self.hang_angle_samples = StableExtremum(True); self.hang_reach_samples = StableExtremum(True)
+
+    def clear_calibration_samples(self):
+        self.hang_angle_samples.clear(); self.hang_reach_samples.clear()
 
     def process(self, f):
+        self.sample = None
         m = body_metrics(f)
-        if not m.valid:
-            return
+        if not f.visible() or not m.valid:
+            self.clear_calibration_samples(); return
         elbow = avg_angle(f, LS, LE, LW, RS, RE, RW)
-        if math.isnan(elbow):
-            return
+        if math.isnan(elbow) or math.isnan(m.wrist_drop):
+            self.clear_calibration_samples(); return
         self.sm = elbow if math.isnan(self.sm) else self.sm + self.SMOOTH * (elbow - self.sm)
         decision = elbow
         if -m.wrist_drop < self.MIN_ABOVE:
-            self.pull = False; self.status = 'not hanging'; return
-        if decision >= self.HANG:
+            self.clear_calibration_samples(); self.pull = False; self.status = 'not hanging'; return
+        self.observed_hang_angle = self.hang_angle_samples.observe(elbow)
+        self.observed_hang_reach = self.hang_reach_samples.observe(-m.wrist_drop)
+        if decision >= self.hang_threshold():
             self.hang_reach = (-m.wrist_drop) if math.isnan(self.hang_reach) else max(self.hang_reach, -m.wrist_drop)
         rise = 0.0 if math.isnan(self.hang_reach) else self.hang_reach - (-m.wrist_drop)
+        if not math.isnan(self.observed_hang_reach): self.sample = (elbow, self.observed_hang_reach - (-m.wrist_drop))
+        if self.await_hang:
+            if decision >= self.hang_threshold():
+                self.await_hang = False; self.pull = False; self.status = 'hang'
+            else:
+                self.status = 'calibrated, return to hang'
+            return
         now = f.ts
         if not self.pull:
-            if decision < self.START:
+            start_pull = (self.START if self.personal is None else self.personal['start'] - max(3, min(5,
+                (self.personal['start'] - min(self.PULL, self.personal['start'] - 20)) * self.personal['target'] * 0.45)))
+            if decision < start_pull:
                 self.pull = True; self.pull_start = now; self.rep_min = elbow; self.rep_max_rise = rise
             else:
                 self.status = 'hang'; return
         else:
             self.rep_min = min(self.rep_min, elbow); self.rep_max_rise = max(self.rep_max_rise, rise)
-        if decision >= self.HANG:
+        if decision >= self.hang_threshold():
             if self.pull:
                 self.finish(now - self.pull_start)
             self.status = 'hang'
         else:
             self.status = 'pull'
 
+    def hang_threshold(self):
+        return self.HANG if self.personal is None else self.personal['start'] - 2
+
+    @classmethod
+    def depth_score(cls, elbow, start):
+        return 0 if math.isnan(elbow) else max(0, (start - elbow) / (start - min(cls.PULL, start - 20)))
+
+    def capture(self, raw):
+        if self.await_hang or math.isnan(self.observed_hang_angle) or self.sample is None: return None
+        m = body_metrics(raw); raw_elbow = avg_angle(raw, LS, LE, LW, RS, RE, RW)
+        if not m.valid or math.isnan(m.wrist_drop) or math.isnan(raw_elbow): return None
+        elbow, rise = self.sample
+        raw_rise = self.observed_hang_reach - (-m.wrist_drop)
+        if abs(raw_elbow - elbow) > 12 or abs(raw_rise - rise) > .15: return None
+        score = self.depth_score(elbow, self.observed_hang_angle)
+        if score < 0.18 or rise < 0.02: return None
+        return dict(type='pullup', variant='', start=self.observed_hang_angle, target=clamp(score * 0.95, 0.15, 5.0),
+                    angle=elbow, movement=rise, max_form=0, min_hip=0,
+                    min_movement=min(self.MIN_RISE, max(0.02, rise * 0.8)), kneel=False,
+                    form_warning=rise < self.MIN_RISE)
+
+    def apply_event(self, calibration):
+        if calibration is None or calibration['type'] != 'pullup': return
+        self.personal = calibration
+        if not math.isnan(self.observed_hang_reach): self.hang_reach = self.observed_hang_reach
+        self.pull = False; self.await_hang = True; self.good += 1
+        if calibration['form_warning']: self.form += 1
+
     def finish(self, dur):
         mn, rise = self.rep_min, self.rep_max_rise
         self.pull = False; self.rep_min = float('nan'); self.rep_max_rise = 0.0
         if dur < self.MIN_REP:
             return
-        deep = mn <= self.PULL; moved = mn <= self.PARTIAL; rose = rise >= self.MIN_RISE
+        standard_depth = mn <= self.PULL; reached = self.depth_score(mn, self.HANG if self.personal is None else self.personal['start'])
+        deep = standard_depth if self.personal is None else reached >= self.personal['target']
+        moved = mn <= self.PARTIAL or (self.personal is not None and reached >= self.personal['target'] * 0.65)
+        rose = rise >= (self.MIN_RISE if self.personal is None else self.personal['min_movement'])
         if not rose:
             return
         if not deep:
@@ -648,6 +851,7 @@ class PullUp:
             self.bad += 1; self.form += 1
         else:
             self.good += 1
+            if self.personal is not None and rise < self.MIN_RISE: self.form += 1
 
 
 # ---------------- 平板支撑 ----------------

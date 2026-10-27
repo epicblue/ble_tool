@@ -391,6 +391,186 @@ for kind, label in (('plank', 'plank'), ('wall', 'wall sit'), ('handstand', 'han
     check('roll compensation restores %s (+30°)' % label, raw == 0 and fixed >= 3000,
           'raw=%dms fixed=%dms' % (raw, fixed))
 
+# I) 手动个人校准：即时记一次、回到起始位前不重复、同目标后续可自动计数
+c = PushUp('pushup'); ts = 0
+check('calibration needs a starting pose', c.capture(pushup(ts, 115)) is None)
+for _ in range(5):
+    c.process(pushup(ts, 168)); ts += STEP
+check('calibration rejects top', c.capture(pushup(ts - STEP, 168)) is None)
+for a in (155, 145, 135, 125, 115):
+    for _ in range(3):
+        c.process(pushup(ts, a)); ts += STEP
+sample = pushup(ts - STEP, 115)
+missing = F({i: (v[0], v[1], v[2], 0.05 if i in (LE, RE, LA, RA) else v[3])
+             for i, v in sample.p.items()}, sample.ts)
+check('calibration rejects occluded raw pose', c.capture(missing) is None)
+check('calibration rejects moving/stale pose', c.capture(pushup(ts - STEP, 150)) is None)
+cal = c.capture(sample)
+check('115° personal target captured', cal is not None and abs(cal['angle'] - 115) < 1
+      and 0.73 < cal['target'] < 0.75 and abs(cal['start'] - 168) < 1, str(cal))
+c.apply_event(cal)
+check('calibration counts immediately', c.good == 1 and c.bad == 0)
+check('same repetition cannot be tapped twice', c.capture(sample) is None and c.good == 1)
+# 模拟长时间丢失，回到低位仍不能重复点击。
+c.process(frame(ts + 1200, {})); ts += 1266
+c.process(pushup(ts, 115)); ts += STEP
+check('dropout cannot unlock duplicate', c.capture(pushup(ts - STEP, 115)) is None and c.good == 1)
+for a in (125, 135, 145, 155, 168, 168, 168):
+    c.process(pushup(ts, a)); ts += STEP
+check('return to top does not double count', c.good == 1 and c.bad == 0)
+ts = feed_pushup(c, ts, 115, 0, False)
+check('same personal depth counts later', c.good == 2 and c.bad == 0, f'good={c.good} bad={c.bad}')
+ts = feed_pushup(c, ts, 130, 0, False)
+check('shallower than personal target not effective', c.good == 2, f'good={c.good} bad={c.bad}')
+restored = PushUp('pushup'); restored.personal = dict(cal)
+ts2 = feed_pushup(restored, 0, 115, 0, False)
+check('restored target applies in next session', restored.good == 1 and restored.bad == 0)
+default = PushUp('pushup'); feed_pushup(default, 0, 115, 0, False)
+check('other uncalibrated analyzer unchanged', default.good == 0 and default.bad == 1)
+
+# 校准当前跪姿时按个人目标记数，仍保留姿势提醒；未校准的跪姿不会变标准。
+k = PushUp('pushup'); t = 0
+for _ in range(5):
+    k.process(pushup(t, 168, 0, True)); t += STEP
+for a in (155, 145, 135, 125, 115):
+    for _ in range(3):
+        k.process(pushup(t, a, 0, True)); t += STEP
+kcal = k.capture(pushup(t - STEP, 115, 0, True)); k.apply_event(kcal)
+for a in (125, 135, 145, 155, 168, 168, 168):
+    k.process(pushup(t, a, 0, True)); t += STEP
+feed_pushup(k, t, 115, 0, True)
+check('captured kneeling allowed but warned', kcal['kneel'] and k.good == 2 and k.form >= 2,
+      f'good={k.good} bad={k.bad} warnings={k.form}')
+bad_mode = PushUp('bad_pushup'); t = 0
+for _ in range(5):
+    bad_mode.process(pushup(t, 168)); t += STEP
+for a in (155, 145, 135, 125, 115):
+    for _ in range(3):
+        bad_mode.process(pushup(t, a)); t += STEP
+bc = bad_mode.capture(pushup(t - STEP, 115)); bad_mode.apply_event(bc)
+check('bad-pushup button increments bad score', bad_mode.bad == 1 and bad_mode.good == 0)
+for a in (125, 135, 145, 155, 168, 168, 168):
+    bad_mode.process(pushup(t, a)); t += STEP
+feed_pushup(bad_mode, t, 115, 0, False)
+check('bad-pushup next shallow rep counts', bad_mode.bad == 2 and bad_mode.good == 0)
+
+# 深蹲：即使只蹲到 130°，确认后也能按个人目标识别；顶端不重复。
+sq = Squat(); t = 0
+for _ in range(5):
+    sq.process(squat(t, 175, 0)); t += STEP
+for a in (160, 150, 140, 130, 130, 130):
+    for _ in range(3):
+        sq.process(squat(t, a, 0.12 if a < 150 else 0)); t += STEP
+sc = sq.capture(squat(t - STEP, 130, 0.12)); sq.apply_event(sc)
+for a in (140, 150, 160, 175, 175):
+    for _ in range(3):
+        sq.process(squat(t, a, 0.12 if a < 150 else 0)); t += STEP
+check('squat calibration counts once', sc is not None and sq.good == 1 and sq.bad == 0)
+for a in (160, 150, 140, 130, 130, 130, 140, 150, 160, 175, 175):
+    for _ in range(3):
+        sq.process(squat(t, a, 0.12 if a < 150 else 0)); t += STEP
+check('squat personal target counts later', sq.good == 2 and sq.bad == 0)
+
+# 引体向上：必须真的有上升量，校准后同样幅度可以计数。
+pu = PullUp(); t = 0
+for _ in range(5):
+    pu.process(pullup(t, 172, 0)); t += STEP
+for a, rise in ((165, .02), (145, .10), (135, .15), (125, .20)):
+    for _ in range(4):
+        pu.process(pullup(t, a, rise)); t += STEP
+pc = pu.capture(pullup(t - STEP, 125, .20)); pu.apply_event(pc)
+for a, rise in ((135, .15), (145, .10), (165, .02), (172, 0)):
+    for _ in range(4):
+        pu.process(pullup(t, a, rise)); t += STEP
+check('pullup calibration counts once', pc is not None and pu.good == 1 and pu.bad == 0)
+for a, rise in ((165, .02), (145, .10), (135, .15), (125, .20),
+                (135, .15), (145, .10), (165, .02), (172, 0)):
+    for _ in range(4):
+        pu.process(pullup(t, a, rise)); t += STEP
+check('pullup personal target counts later', pu.good == 2 and pu.bad == 0)
+
+# 起始位无法达到标准伸直角时，以本组观察到的起始角为基准；静止不动仍不能校准。
+limited = PushUp('pushup'); t = 0
+for _ in range(8):
+    limited.process(pushup(t, 140)); t += STEP
+check('limited pushup top alone is rejected', limited.capture(pushup(t - STEP, 140)) is None)
+# 单帧角度跳变不应把起始位从 140° 错写成 175°。
+limited.process(pushup(t, 175)); t += STEP
+limited.process(pushup(t, 140)); t += STEP
+for a in (138, 134, 130, 125, 120, 115, 115):
+    for _ in range(3):
+        limited.process(pushup(t, a)); t += STEP
+lc = limited.capture(pushup(t - STEP, 115)); limited.apply_event(lc)
+for a in (120, 125, 130, 135, 140, 140, 140):
+    for _ in range(2):
+        limited.process(pushup(t, a)); t += STEP
+for a in rep_profile(115, 140, 8) + [140] * 4:
+    limited.process(pushup(t, a)); t += STEP
+check('limited pushup start and depth count', lc is not None and abs(lc['start'] - 140) < 1
+      and limited.good == 2 and limited.bad == 0, f'cal={lc} good={limited.good} bad={limited.bad}')
+limited_sq = Squat(); t = 0
+for _ in range(8):
+    limited_sq.process(squat(t, 140, 0)); t += STEP
+limited_sq.process(squat(t, 175, 0)); t += STEP
+limited_sq.process(squat(t, 140, 0)); t += STEP
+for a in (138, 134, 130, 125, 120, 115, 115):
+    for _ in range(3):
+        limited_sq.process(squat(t, a, .12 if a < 135 else 0)); t += STEP
+lsc = limited_sq.capture(squat(t - STEP, 115, .12)); limited_sq.apply_event(lsc)
+for a in (120, 125, 130, 135, 140, 140, 140, 138, 134, 130, 125, 120, 115, 115,
+          120, 125, 130, 135, 140, 140, 140):
+    for _ in range(3):
+        limited_sq.process(squat(t, a, .12 if a < 135 else 0)); t += STEP
+check('limited squat start and depth count', lsc is not None and abs(lsc['start'] - 140) < 1
+      and limited_sq.good == 2 and limited_sq.bad == 0)
+limited_pull = PullUp(); t = 0
+for _ in range(8):
+    limited_pull.process(pullup(t, 140, 0)); t += STEP
+limited_pull.process(pullup(t, 175, 0)); t += STEP
+limited_pull.process(pullup(t, 140, 0)); t += STEP
+down = ((138, .02), (134, .05), (130, .08), (125, .12), (120, .16), (115, .2))
+up = ((120, .16), (125, .12), (130, .08), (135, .04), (140, 0))
+for a, rise in down:
+    for _ in range(4):
+        limited_pull.process(pullup(t, a, rise)); t += STEP
+lpc = limited_pull.capture(pullup(t - STEP, 115, .2)); limited_pull.apply_event(lpc)
+for a, rise in up + down + up:
+    for _ in range(4):
+        limited_pull.process(pullup(t, a, rise)); t += STEP
+check('limited pullup start and depth count', lpc is not None and abs(lpc['start'] - 140) < 1
+      and limited_pull.good == 2 and limited_pull.bad == 0)
+
+check('single-frame spikes do not raise start angle',
+      all(c is not None and abs(c['start'] - 140) < 1 for c in (lc, lsc, lpc)),
+      f"push={lc['start']}, squat={lsc['start']}, pull={lpc['start']}")
+
+# 组内多次校准：按帧回放按钮事件，不受后来个人设置变化影响。
+frames = []; t = 0
+for a in [168] * 5 + [155, 145, 135, 125, 115] * 3:
+    frames.append(pushup(t, a)); t += STEP
+first_event = len(frames) - 1
+for a in [125, 135, 145, 155, 168, 168, 168]:
+    frames.append(pushup(t, a)); t += STEP
+for a in [155, 145, 135, 125, 110] * 3:
+    frames.append(pushup(t, a)); t += STEP
+second_event = len(frames) - 1
+for a in [125, 135, 145, 155, 168, 168, 168] + rep_profile(110, 168, 8) + [168] * 3:
+    frames.append(pushup(t, a)); t += STEP
+live = PushUp('pushup'); changes = {}; expected = []
+for i, f in enumerate(frames):
+    live.process(f)
+    if i in (first_event, second_event):
+        changes[i] = live.capture(f); live.apply_event(changes[i])
+    expected.append((live.good, live.bad))
+replay = PushUp('pushup'); actual = []
+for i, f in enumerate(frames):
+    replay.process(f)
+    if i in changes: replay.apply_event(changes[i])
+    actual.append((replay.good, replay.bad))
+check('replay restores calibration event timing', expected == actual and actual[first_event] == (1, 0)
+      and actual[second_event] == (2, 0) and actual[-1] == (3, 0),
+      f'events={actual[first_event]}, {actual[second_event]}; final={actual[-1]}')
+
 failed = [r for r in results if not r[1]]
 for name, ok, extra in results:
     print(('PASS  ' if ok else 'FAIL  ') + name.ljust(34) + ('[' + extra + ']' if extra else ''))

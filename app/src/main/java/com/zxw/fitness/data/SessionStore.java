@@ -5,6 +5,8 @@ import android.text.TextUtils;
 
 import com.zxw.fitness.model.ExerciseType;
 import com.zxw.fitness.model.Session;
+import com.zxw.fitness.model.CalibrationChange;
+import com.zxw.fitness.model.PersonalCalibration;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -201,6 +203,19 @@ public final class SessionStore {
             o.put("videoFile", s.getVideoFile());
             o.put("thumbFile", s.getThumbFile());
             o.put("note", s.getNote());
+            if (s.getInitialCalibration() != null) {
+                o.put("initialCalibration", CalibrationJson.write(s.getInitialCalibration()));
+            }
+            if (!s.getCalibrationChanges().isEmpty()) {
+                JSONArray events = new JSONArray();
+                for (CalibrationChange change : s.getCalibrationChanges()) {
+                    JSONObject event = new JSONObject();
+                    event.put("frameIndex", change.frameIndex);
+                    event.put("calibration", CalibrationJson.write(change.calibration));
+                    events.put(event);
+                }
+                o.put("calibrationChanges", events);
+            }
             if (!Float.isNaN(s.getStability())) {
                 o.put("stability", s.getStability());
             }
@@ -229,6 +244,16 @@ public final class SessionStore {
             s.setThumbFile(o.optString("thumbFile", null));
             s.setNote(o.optString("note", ""));
             s.setStability((float) o.optDouble("stability", Double.NaN));
+            s.setInitialCalibration(CalibrationJson.read(o.optJSONObject("initialCalibration")));
+            JSONArray events = o.optJSONArray("calibrationChanges");
+            if (events != null) {
+                for (int i = 0; i < events.length(); i++) {
+                    JSONObject event = events.optJSONObject(i);
+                    if (event == null) continue;
+                    PersonalCalibration calibration = CalibrationJson.read(event.optJSONObject("calibration"));
+                    s.addCalibrationChange(event.optInt("frameIndex", -1), calibration);
+                }
+            }
             return s;
         } catch (JSONException e) {
             return null;

@@ -12,17 +12,18 @@ import java.io.OutputStream;
  * 把每帧关键点写入二进制文件（体积小、解析快），供回放时重绘骨架。
  *
  * <p>文件结构：magic("POSE") + version(int) + 画面宽(int) + 画面高(int) + 帧数组。
- * 每帧：timeOffsetMs(int) + visible(byte) + 17*4 个 float(x,y,z,confidence)。</p>
+ * v2 每帧：timeOffsetMs(int) + visible(byte) + roll(float) + 17*4 个 float(x,y,z,confidence)。</p>
  */
 public class PoseLogWriter {
 
     public static final int MAGIC = 0x504F5345; // "POSE"
-    public static final int VERSION = 1;
+    public static final int VERSION = 2;
 
     private OutputStream out;
     private long startTimeMs = -1;
     private int frameCount;
     private boolean closed;
+    private boolean failed;
 
     public PoseLogWriter(File file, int viewWidth, int viewHeight) throws IOException {
         File parent = file.getParentFile();
@@ -38,6 +39,10 @@ public class PoseLogWriter {
     }
 
     public synchronized void addFrame(PoseFrame frame) {
+        addFrame(frame, 0f);
+    }
+
+    public synchronized void addFrame(PoseFrame frame, float rollDegrees) {
         if (closed || out == null || frame == null) {
             return;
         }
@@ -48,15 +53,32 @@ public class PoseLogWriter {
             int offset = (int) Math.max(0, frame.getTimestampMs() - startTimeMs);
             writeInt(offset);
             out.write(frame.isVisible() ? 1 : 0);
+            writeInt(Float.floatToIntBits(rollDegrees));
             float[] compact = frame.toCompactArray();
             for (float value : compact) {
                 writeInt(Float.floatToIntBits(value));
             }
             frameCount++;
         } catch (IOException e) {
+            failed = true;
             close();
         }
     }
+
+    /** 主动写出缓冲区，供个人校准确认事件可被回放。 */
+    public synchronized boolean flush() {
+        if (closed || out == null || failed) return false;
+        try {
+            out.flush();
+            return true;
+        } catch (IOException e) {
+            failed = true;
+            close();
+            return false;
+        }
+    }
+
+    public synchronized boolean hasError() { return failed; }
 
     public int getFrameCount() {
         return frameCount;
@@ -69,10 +91,9 @@ public class PoseLogWriter {
         closed = true;
         if (out != null) {
             try {
-                out.flush();
                 out.close();
             } catch (IOException ignored) {
-                // ignore
+                failed = true;
             }
             out = null;
         }

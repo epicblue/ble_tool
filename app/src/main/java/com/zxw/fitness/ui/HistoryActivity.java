@@ -233,7 +233,8 @@ public class HistoryActivity extends Activity {
             holder.tvTitle.setText(type.getTitle()
                     + (type == ExerciseType.CHAIR_PUSHUP
                     ? ("hands".equals(session.getVariant()) ? " · 手撑凳" : " · 脚垫凳") : ""));
-            holder.tvTime.setText(TimeUtils.formatFriendly(session.getStartedAt()));
+            holder.tvTime.setText(TimeUtils.formatFriendly(session.getStartedAt())
+                    + (session.hasPersonalCalibration() ? " · 个人目标" : ""));
 
             holder.tvResult.setText(session.getResultText());
 

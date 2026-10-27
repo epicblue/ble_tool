@@ -1,6 +1,8 @@
 package com.zxw.fitness.analysis;
 
 import com.zxw.fitness.model.PoseFrame;
+import com.zxw.fitness.model.ExerciseType;
+import com.zxw.fitness.model.PersonalCalibration;
 import com.zxw.fitness.pose.BodyMetrics;
 import com.zxw.fitness.pose.PoseMath;
 
@@ -21,7 +23,7 @@ import java.util.Locale;
  *     <li>只适用于站立姿态（髋在肩下方、脚在髋下方），俯卧/倒立时不计。</li>
  * </ul>
  */
-public class SquatCounter implements RepAnalyzer {
+public class SquatCounter implements PersonalCalibrationAnalyzer {
 
     /** 到位深度（膝角，度）。 */
     private static final float DEPTH_ANGLE = 100f;
@@ -66,6 +68,17 @@ public class SquatCounter implements RepAnalyzer {
     private String hint = "";
     private String phaseText = "等待开始";
     private long lastValidMs = -1;
+    private PersonalCalibration personal;
+    private float observedStandKnee = Float.NaN;
+    private float observedStandHipY = Float.NaN;
+    private final StableExtremum standKneeSamples = new StableExtremum(true);
+    private final StableExtremum standHipSamples = new StableExtremum(false);
+    private boolean awaitingStand;
+    private boolean sampleReady;
+    private float sampleKnee;
+    private float sampleTravel;
+    private float sampleLean;
+    private String calibrationError = "请先站直，再保持在当前能做到的最低位置";
 
     public SquatCounter(RepListener listener) {
         this.listener = listener;
@@ -88,17 +101,26 @@ public class SquatCounter implements RepAnalyzer {
         hint = "";
         phaseText = "等待开始";
         lastValidMs = -1;
+        observedStandKnee = Float.NaN;
+        observedStandHipY = Float.NaN;
+        standKneeSamples.reset();
+        standHipSamples.reset();
+        awaitingStand = false;
+        sampleReady = false;
     }
 
     @Override
     public void process(PoseFrame frame) {
+        sampleReady = false;
         long now = frame == null ? System.currentTimeMillis() : frame.getTimestampMs();
         if (frame == null || !frame.isVisible()) {
+            clearCalibrationSamples();
             handleDropout(now);
             return;
         }
         BodyMetrics metrics = BodyMetrics.of(frame);
         if (!metrics.valid) {
+            clearCalibrationSamples();
             phaseText = "未完整识别到身体";
             hint = "请让肩、髋、膝盖都进入画面";
             handleDropout(now);
@@ -110,6 +132,7 @@ public class SquatCounter implements RepAnalyzer {
         boolean hipBelowShoulder = metrics.hipY > metrics.shoulderY + 0.02f;
         boolean ankleBelowHip = !metrics.hasAnkle || metrics.ankleY > metrics.hipY - 0.02f;
         if (!hipBelowShoulder || !ankleBelowHip || metrics.isInverted()) {
+            clearCalibrationSamples();
             dropPhase();
             phaseText = "未进入深蹲站姿";
             hint = "请正对或侧对镜头站直，全身入镜";
@@ -120,6 +143,7 @@ public class SquatCounter implements RepAnalyzer {
                 PoseFrame.LEFT_HIP, PoseFrame.LEFT_KNEE, PoseFrame.LEFT_ANKLE,
                 PoseFrame.RIGHT_HIP, PoseFrame.RIGHT_KNEE, PoseFrame.RIGHT_ANKLE);
         if (Float.isNaN(knee)) {
+            clearCalibrationSamples();
             phaseText = "请让腿部完整入镜";
             hint = "膝盖或脚踝被遮挡";
             hidePartial();
@@ -132,8 +156,11 @@ public class SquatCounter implements RepAnalyzer {
                 ? metrics.hipY
                 : smoothedHipY + SMOOTHING * (metrics.hipY - smoothedHipY);
 
-        // 站立基准：膝盖伸直时记录髋高（取"最高"的那次，抵消镜头轻微移动）
-        if (knee >= STAND_ANGLE) {
+        // 用连续三帧确认站立位，不要求膝盖完全伸直。
+        observedStandKnee = standKneeSamples.observe(knee);
+        observedStandHipY = standHipSamples.observe(smoothedHipY);
+        // 未校准时仍采用原来的标准站立门槛。
+        if (knee >= standThreshold()) {
             standHipY = Float.isNaN(standHipY)
                     ? smoothedHipY
                     : Math.min(standHipY, smoothedHipY);
@@ -147,9 +174,29 @@ public class SquatCounter implements RepAnalyzer {
         if (Float.isNaN(lean)) {
             lean = 0f;
         }
+        sampleReady = metrics.hasAnkle && !Float.isNaN(observedStandHipY);
+        sampleKnee = knee;
+        sampleTravel = (smoothedHipY - observedStandHipY) / Math.max(0.04f, metrics.bodyScale);
+        sampleLean = lean;
+
+        if (awaitingStand) {
+            if (smoothedKnee >= standThreshold()) {
+                awaitingStand = false;
+                dropPhase();
+                phaseText = "站直（可以开始下一次）";
+                hint = "";
+            } else {
+                phaseText = "个人校准已计数";
+                hint = "请先站直";
+            }
+            return;
+        }
 
         if (!downPhase) {
-            if (smoothedKnee < START_DOWN_ANGLE) {
+            boolean started = personal == null ? smoothedKnee < START_DOWN_ANGLE
+                    : depthScore(smoothedKnee, travel, personal.getStartingAngle()) >= Math.max(0.10f,
+                    personal.getTargetDepth() * 0.5f);
+            if (started) {
                 downPhase = true;
                 downStartMs = now;
                 repMinKnee = knee;
@@ -166,7 +213,7 @@ public class SquatCounter implements RepAnalyzer {
             repMaxTravel = Math.max(repMaxTravel, travel);
         }
 
-        if (smoothedKnee >= STAND_ANGLE) {
+        if (smoothedKnee >= standThreshold()) {
             if (downPhase) {
                 finishRep(now - downStartMs);
             }
@@ -194,10 +241,14 @@ public class SquatCounter implements RepAnalyzer {
 
         // 膝角在侧对镜头时最准；髋部下移沿重力方向量，正对/斜对镜头都不受影响，
         // 两者都是"深度的下限估计"，取较大者可以覆盖不同机位。
-        boolean deepEnough = minKnee <= DEPTH_ANGLE || travel >= HIP_TRAVEL_DEEP;
-        boolean clearlyMoved = minKnee <= PARTIAL_ANGLE || travel >= HIP_TRAVEL_PARTIAL;
-        boolean hipMoved = travel >= MIN_HIP_TRAVEL;
-        boolean leanOk = maxLean <= MAX_TORSO_LEAN;
+        boolean standardDepth = minKnee <= DEPTH_ANGLE || travel >= HIP_TRAVEL_DEEP;
+        float reached = depthScore(minKnee, travel, personal == null
+                ? STAND_ANGLE : personal.getStartingAngle());
+        boolean deepEnough = personal == null ? standardDepth : reached >= personal.getTargetDepth();
+        boolean clearlyMoved = minKnee <= PARTIAL_ANGLE || travel >= HIP_TRAVEL_PARTIAL
+                || (personal != null && reached >= personal.getTargetDepth() * 0.65f);
+        boolean hipMoved = travel >= (personal == null ? MIN_HIP_TRAVEL : personal.getMinMovement());
+        boolean leanOk = maxLean <= (personal == null ? MAX_TORSO_LEAN : personal.getMaxForm());
 
         String reason = null;
         if (!hipMoved) {
@@ -221,13 +272,97 @@ public class SquatCounter implements RepAnalyzer {
             formErrors++;
         } else {
             goodReps++;
+            if (personal != null && maxLean > MAX_TORSO_LEAN) formErrors++;
         }
 
         phaseText = "站直";
-        hint = reason == null ? "" : reason;
+        hint = reason != null ? reason : personal != null
+                && (!standardDepth || maxLean > MAX_TORSO_LEAN)
+                ? "按个人目标计数，注意姿势" : "";
         if (listener != null) {
             listener.onRep(new RepEvent(reason == null, reason, durationMs,
                     goodReps, badReps, minKnee, maxLean));
+        }
+    }
+
+    private float standThreshold() {
+        return personal == null ? STAND_ANGLE : personal.getStartingAngle() - 2f;
+    }
+
+    private static float depthScore(float knee, float travel, float startingAngle) {
+        float reference = PersonalCalibration.referenceAngle(startingAngle, DEPTH_ANGLE);
+        float angle = Float.isNaN(knee) ? 0f : Math.max(0f, (startingAngle - knee)
+                / (startingAngle - reference));
+        return Math.max(angle, Math.max(0f, travel) / HIP_TRAVEL_DEEP);
+    }
+
+    @Override
+    public void setPersonalCalibration(PersonalCalibration calibration) {
+        personal = calibration != null && calibration.isValid()
+                && calibration.matches(ExerciseType.SQUAT, "") ? calibration : null;
+    }
+
+    private void clearCalibrationSamples() {
+        standKneeSamples.clearWindow();
+        standHipSamples.clearWindow();
+    }
+
+    @Override
+    public PersonalCalibration capturePersonalCalibration(PoseFrame raw) {
+        if (awaitingStand) {
+            calibrationError = "本次已计数，请先站直";
+            return null;
+        }
+        if (Float.isNaN(observedStandKnee) || Float.isNaN(observedStandHipY)) {
+            calibrationError = "请先站起并保持片刻，再下蹲到当前最低位置";
+            return null;
+        }
+        BodyMetrics metrics = BodyMetrics.of(raw);
+        float knee = PoseMath.averageAngle(raw,
+                PoseFrame.LEFT_HIP, PoseFrame.LEFT_KNEE, PoseFrame.LEFT_ANKLE,
+                PoseFrame.RIGHT_HIP, PoseFrame.RIGHT_KNEE, PoseFrame.RIGHT_ANKLE);
+        if (!sampleReady || !metrics.valid || !metrics.hasAnkle || Float.isNaN(knee)) {
+            calibrationError = "识别不完整，请让肩、髋、膝盖和脚踝入镜并保持片刻";
+            return null;
+        }
+        float rawTravel = (metrics.hipY - observedStandHipY) / Math.max(0.04f, metrics.bodyScale);
+        float rawLean = metrics.torsoAngleFromVertical();
+        if (Float.isNaN(rawLean) || Math.abs(knee - sampleKnee) > 12f
+                || Math.abs(rawTravel - sampleTravel) > 0.15f || Math.abs(rawLean - sampleLean) > 15f) {
+            calibrationError = "动作仍在变化或识别不稳定，请在最低位置保持片刻再校准";
+            return null;
+        }
+        float depth = depthScore(sampleKnee, sampleTravel, observedStandKnee);
+        if (depth < 0.18f || sampleTravel < 0.04f) {
+            calibrationError = "请先从站立位向下坐一些，再按个人校准";
+            return null;
+        }
+        float target = Math.max(PersonalCalibration.MIN_TARGET,
+                Math.min(PersonalCalibration.MAX_TARGET, depth * 0.95f));
+        float minTravel = Math.min(MIN_HIP_TRAVEL, Math.max(0.03f, sampleTravel * 0.8f));
+        return new PersonalCalibration(ExerciseType.SQUAT, "", target, sampleKnee,
+                sampleTravel, Math.max(MAX_TORSO_LEAN, sampleLean + 3f), 0f,
+                minTravel, false, sampleLean > MAX_TORSO_LEAN, observedStandKnee);
+    }
+
+    @Override
+    public String getCalibrationError() { return calibrationError; }
+
+    @Override
+    public void applyCalibrationEvent(PersonalCalibration calibration) {
+        if (calibration == null || !calibration.isValid()
+                || !calibration.matches(ExerciseType.SQUAT, "")) return;
+        setPersonalCalibration(calibration);
+        if (!Float.isNaN(observedStandHipY)) standHipY = observedStandHipY;
+        dropPhase();
+        awaitingStand = true;
+        goodReps++;
+        if (calibration.hasFormWarning()) formErrors++;
+        phaseText = "个人校准已计数";
+        hint = "请先站直；个人目标不代表标准姿势";
+        if (listener != null) {
+            listener.onRep(new RepEvent(true, null, 0, goodReps, badReps,
+                    calibration.getCapturedAngle(), calibration.getMaxForm()));
         }
     }
 
@@ -313,7 +448,10 @@ public class SquatCounter implements RepAnalyzer {
         if (Float.isNaN(smoothedKnee)) {
             return 0f;
         }
-        float progress = (STAND_ANGLE - smoothedKnee) / (STAND_ANGLE - DEPTH_ANGLE);
+        float progress = personal == null
+                ? (STAND_ANGLE - smoothedKnee) / (STAND_ANGLE - DEPTH_ANGLE)
+                : depthScore(smoothedKnee, lastHipTravel, personal.getStartingAngle())
+                / personal.getTargetDepth();
         return Math.max(0f, Math.min(1f, progress));
     }
 

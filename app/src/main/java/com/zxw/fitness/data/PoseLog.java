@@ -1,6 +1,7 @@
 package com.zxw.fitness.data;
 
 import com.zxw.fitness.model.PoseFrame;
+import com.zxw.fitness.pose.GravityAlign;
 
 import java.io.BufferedInputStream;
 import java.io.DataInputStream;
@@ -18,12 +19,17 @@ public class PoseLog {
     private final int viewWidth;
     private final int viewHeight;
     private final List<PoseFrame> frames;
+    private final List<PoseFrame> displayFrames;
+    private final boolean legacyPixelCoordinates;
     private final long durationMs;
 
-    private PoseLog(int viewWidth, int viewHeight, List<PoseFrame> frames, long durationMs) {
+    private PoseLog(int viewWidth, int viewHeight, List<PoseFrame> frames,
+                    List<PoseFrame> displayFrames, boolean legacyPixelCoordinates, long durationMs) {
         this.viewWidth = viewWidth;
         this.viewHeight = viewHeight;
         this.frames = frames;
+        this.displayFrames = displayFrames;
+        this.legacyPixelCoordinates = legacyPixelCoordinates;
         this.durationMs = durationMs;
     }
 
@@ -38,6 +44,11 @@ public class PoseLog {
     public List<PoseFrame> getFrames() {
         return frames;
     }
+
+    /** 与视频画面同一坐标系的骨架；判定仍使用 getFrames() 的重力对齐坐标。 */
+    public List<PoseFrame> getDisplayFrames() { return displayFrames; }
+
+    public boolean isLegacyPixelCoordinates() { return legacyPixelCoordinates; }
 
     public long getDurationMs() {
         return durationMs;
@@ -63,12 +74,14 @@ public class PoseLog {
                 return null;
             }
             int version = in.readInt();
-            if (version != PoseLogWriter.VERSION) {
+            if (version != 1 && version != PoseLogWriter.VERSION) {
                 return null;
             }
             int width = in.readInt();
             int height = in.readInt();
+            if (width <= 0 || height <= 0) return null;
             List<PoseFrame> frames = new ArrayList<>();
+            List<PoseFrame> displayFrames = new ArrayList<>();
             float[] compact = new float[PoseFrame.LANDMARK_SUBSET.length * 4];
             long last = 0;
             while (true) {
@@ -79,6 +92,7 @@ public class PoseLog {
                     break;
                 }
                 boolean visible = in.readByte() != 0;
+                float roll = version >= 2 ? Float.intBitsToFloat(in.readInt()) : 0f;
                 for (int i = 0; i < compact.length; i++) {
                     compact[i] = Float.intBitsToFloat(in.readInt());
                 }
@@ -87,9 +101,13 @@ public class PoseLog {
                     frame = PoseFrame.empty(offset);
                 }
                 frames.add(frame);
+                // v1 没记录横滚，原样回放；v2 逆向旋转，叠加到未旋转的录像上。
+                PoseFrame display = version >= 2 && visible && Math.abs(roll) >= 0.01f
+                        ? GravityAlign.rotate(frame, -roll, 0.5f, height / (2f * width)) : frame;
+                displayFrames.add(display);
                 last = offset;
             }
-            return new PoseLog(width, height, frames, last);
+            return new PoseLog(width, height, frames, displayFrames, version == 1, last);
         } catch (IOException e) {
             return null;
         } finally {

@@ -1,6 +1,9 @@
 package com.zxw.fitness.model;
 
 import java.util.Locale;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
 /**
  * 一次训练的汇总结果。
@@ -25,6 +28,10 @@ public class Session {
     private String note = "";
     /** 计时类动作的稳定度 0~1，无效时为 NaN（不参与 JSON）。 */
     private float stability = Float.NaN;
+    /** 本组开始时的个人设置及组内按钮事件，不依赖以后账号设置的变化。 */
+    private PersonalCalibration initialCalibration;
+    private final List<CalibrationChange> calibrationChanges = new ArrayList<>();
+
 
     public Session() {
     }
@@ -162,6 +169,28 @@ public class Session {
 
     public void setStability(float stability) {
         this.stability = stability;
+    }
+
+    public PersonalCalibration getInitialCalibration() { return initialCalibration; }
+
+    public void setInitialCalibration(PersonalCalibration calibration) {
+        initialCalibration = calibration != null && calibration.isValid()
+                && calibration.matches(getExerciseType(), getVariant()) ? calibration : null;
+    }
+
+    public void addCalibrationChange(int frameIndex, PersonalCalibration calibration) {
+        if (frameIndex >= 0 && calibration != null && calibration.isValid()
+                && calibration.matches(getExerciseType(), getVariant())) {
+            calibrationChanges.add(new CalibrationChange(frameIndex, calibration));
+        }
+    }
+
+    public List<CalibrationChange> getCalibrationChanges() {
+        return Collections.unmodifiableList(calibrationChanges);
+    }
+
+    public boolean hasPersonalCalibration() {
+        return initialCalibration != null || !calibrationChanges.isEmpty();
     }
 
     public String getNote() {

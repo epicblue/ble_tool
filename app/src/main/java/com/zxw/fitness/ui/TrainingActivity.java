@@ -35,6 +35,7 @@ import com.zxw.fitness.data.SessionStore;
 import com.zxw.fitness.data.UserStore;
 import com.zxw.fitness.model.ExerciseType;
 import com.zxw.fitness.model.PoseFrame;
+import com.zxw.fitness.model.PersonalCalibration;
 import com.zxw.fitness.model.Session;
 import com.zxw.fitness.model.UserProfile;
 import com.zxw.fitness.util.TimeUtils;
@@ -70,6 +71,8 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
     private TextView tvRec;
     private TextView btnStart;
     private TextView btnFinish;
+    private TextView btnCalibrate;
+    private TextView tvCalibration;
     private ProgressBar progress;
     private View hintBox;
     private TextView tvHintTitle;
@@ -91,6 +94,7 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
     private File videoFile;
     private File thumbFile;
     private long lastRecBlink;
+    private int calibrationCountdown;
 
     @Override
     public Lifecycle getLifecycle() {
@@ -125,6 +129,8 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
         tvRec = findViewById(R.id.tvRec);
         btnStart = findViewById(R.id.btnStart);
         btnFinish = findViewById(R.id.btnFinish);
+        btnCalibrate = findViewById(R.id.btnCalibrate);
+        tvCalibration = findViewById(R.id.tvCalibration);
         progress = findViewById(R.id.progress);
         hintBox = findViewById(R.id.hintBox);
         tvHintTitle = findViewById(R.id.tvHintTitle);
@@ -138,8 +144,13 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
         tvBadge.setVisibility(exerciseType.isTimerExercise() ? View.GONE : View.VISIBLE);
         tvBadge.setText("不标准 0");
         tvHintTitle.setText(getTitleText());
+        String calibrationHelp = exerciseType.supportsPersonalCalibration()
+                ? "\n\n个人校准：先回到起始位，再保持在当前能做到的最好位置，点击「个人校准 +1」。"
+                + "立即记一次并保存目标；回到起始位后继续。独自训练可长按按钮，5 秒后自动采样。" : "";
         tvHintBody.setText(exerciseType.getDescription() + "\n\n"
-                + "手机竖直固定，整个人保持在画面内；光线充足、背景干净识别更准。");
+                + "手机竖直固定，整个人保持在画面内；光线充足、背景干净识别更准。"
+                + calibrationHelp);
+        updateCalibrationIndicator();
         tvStatus.setText("点击「开始训练」");
         progress.setMax(100);
         progress.setProgress(0);
@@ -174,12 +185,85 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
                 startWorkout();
             }
         });
+        btnCalibrate.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                if (calibrationCountdown > 0) {
+                    cancelCalibrationCountdown();
+                    Toast.makeText(TrainingActivity.this, "已取消倒计时校准", Toast.LENGTH_SHORT).show();
+                } else {
+                    calibrateNow();
+                }
+            }
+        });
+        btnCalibrate.setOnLongClickListener(new View.OnLongClickListener() {
+            @Override public boolean onLongClick(View v) {
+                if (!running || recorder == null) return true;
+                cancelCalibrationCountdown();
+                calibrationCountdown = 5;
+                btnCalibrate.setText("5 秒后校准 · 点按取消");
+                Toast.makeText(TrainingActivity.this,
+                        "5 秒内先回到起始位，再到最佳位置并保持；再点按钮可取消。",
+                        Toast.LENGTH_LONG).show();
+                handler.postDelayed(calibrationTick, 1000);
+                return true;
+            }
+        });
         btnFinish.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 finishWorkout(false);
             }
         });
+    }
+
+    private final Runnable calibrationTick = new Runnable() {
+        @Override public void run() {
+            if (!running || recorder == null || calibrationCountdown <= 0) {
+                cancelCalibrationCountdown();
+                return;
+            }
+            calibrationCountdown--;
+            if (calibrationCountdown == 0) {
+                btnCalibrate.setText("个人校准 +1");
+                calibrateNow();
+            } else {
+                btnCalibrate.setText(calibrationCountdown + " 秒后校准 · 点按取消");
+                handler.postDelayed(this, 1000);
+            }
+        }
+    };
+
+    private void cancelCalibrationCountdown() {
+        handler.removeCallbacks(calibrationTick);
+        calibrationCountdown = 0;
+        if (btnCalibrate != null) btnCalibrate.setText("个人校准 +1");
+    }
+
+    private void calibrateNow() {
+        if (!running || recorder == null) return;
+        String error = recorder.calibratePersonal();
+        if (error != null) {
+            Toast.makeText(this, error, Toast.LENGTH_LONG).show();
+            return;
+        }
+        UserProfile updated = UserStore.getById(this, user.getId());
+        if (updated != null) user = updated;
+        updateCalibrationIndicator();
+        updateLiveUi();
+        Toast.makeText(this, "已计 1 次并保存个人目标；请先回到起始位。个人目标不代表标准姿势。",
+                Toast.LENGTH_LONG).show();
+    }
+
+    private void updateCalibrationIndicator() {
+        if (!exerciseType.supportsPersonalCalibration()) {
+            tvCalibration.setVisibility(View.GONE);
+            return;
+        }
+        tvCalibration.setVisibility(View.VISIBLE);
+        PersonalCalibration calibration = user.getCalibration(exerciseType, variant);
+        tvCalibration.setText(calibration == null
+                ? "标准目标 · 可在训练中校准当前最佳动作"
+                : "个人目标已启用 · 可在账号设置中查看或恢复默认");
     }
 
     private String getTitleText() {
@@ -235,11 +319,19 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
             Toast.makeText(this, "相机还没准备好，请稍候再试", Toast.LENGTH_SHORT).show();
             return;
         }
+        UserProfile updated = UserStore.getById(this, user.getId());
+        if (updated == null) {
+            Toast.makeText(this, "账号不存在，请返回后重新选择", Toast.LENGTH_LONG).show();
+            return;
+        }
+        user = updated;
+        updateCalibrationIndicator();
         session = new Session();
         session.setId(SessionStore.newSessionId());
         session.setUserId(user.getId());
         session.setExerciseType(exerciseType);
         session.setVariant(variant == null ? "" : variant);
+        session.setInitialCalibration(user.getCalibration(exerciseType, variant));
         session.setStartedAt(System.currentTimeMillis());
         recorder = new WorkoutRecorder(this, session, true, this);
 
@@ -255,6 +347,7 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
         sessionSaved = false;
         resultDialogShown = false;
         btnStart.setVisibility(View.GONE);
+        btnCalibrate.setVisibility(exerciseType.supportsPersonalCalibration() ? View.VISIBLE : View.GONE);
         btnFinish.setVisibility(View.VISIBLE);
         tvRec.setVisibility(videoRequested ? View.VISIBLE : View.GONE);
         hintBox.setVisibility(View.GONE);
@@ -338,9 +431,11 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
             return;
         }
         running = false;
+        cancelCalibrationCountdown();
         handler.removeCallbacks(tick);
         tvRec.setVisibility(View.GONE);
         btnFinish.setVisibility(View.GONE);
+        btnCalibrate.setVisibility(View.GONE);
         btnStart.setVisibility(View.VISIBLE);
         btnStart.setText("再来一组");
 
@@ -444,7 +539,8 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
         resultDialogShown = true;
         final Session saved = session;
         StringBuilder message = new StringBuilder();
-        message.append("结果：").append(saved.getResultText()).append("\n");
+        message.append("结果：").append(saved.getResultText())
+                .append(saved.hasPersonalCalibration() ? "（含个人目标计数）" : "").append("\n");
         message.append("用时：").append(TimeUtils.formatDurationCn(saved.getDurationMs())).append("\n");
         if (exerciseType == ExerciseType.RUNNING) {
             message.append(String.format(Locale.CHINA, "共 %d 步\n", saved.getReps()));
@@ -569,13 +665,15 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
     // ---- CameraController.Listener ----
 
     @Override
-    public void onPose(@NonNull PoseFrame frame, int uprightWidth, int uprightHeight) {
+    public void onPose(@NonNull PoseFrame frame, @NonNull PoseFrame displayFrame,
+                       int uprightWidth, int uprightHeight, float rollDegrees) {
         if (overlay != null) {
             overlay.setSourceSize(uprightWidth, uprightHeight);
-            overlay.setFrame(frame);
+            overlay.setPixelCoordinates(false);
+            overlay.setFrame(displayFrame);
         }
         if (running && recorder != null) {
-            recorder.onPose(frame, uprightWidth, uprightHeight);
+            recorder.onPose(frame, uprightWidth, uprightHeight, rollDegrees);
         }
     }
 

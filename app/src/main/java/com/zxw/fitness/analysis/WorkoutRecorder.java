@@ -1,11 +1,14 @@
 package com.zxw.fitness.analysis;
 
 import android.content.Context;
+import android.os.SystemClock;
 
 import com.zxw.fitness.data.PoseLogWriter;
 import com.zxw.fitness.data.SessionStore;
+import com.zxw.fitness.data.UserStore;
 import com.zxw.fitness.model.ExerciseType;
 import com.zxw.fitness.model.PoseFrame;
+import com.zxw.fitness.model.PersonalCalibration;
 import com.zxw.fitness.model.Session;
 import com.zxw.fitness.pose.PoseSmoother;
 
@@ -19,7 +22,7 @@ import java.io.IOException;
  * <ol>
  *     <li>用 {@link PoseSmoother} 对相机帧做滤波（抗抖动、短暂丢失保持、跳变剔除），
  *     再把结果交给具体判定器；</li>
- *     <li>把滤波后的关键点按固定间隔写入骨架文件，回放时重放同一套数据；</li>
+ *     <li>把滤波后的每个判定帧写入骨架文件，回放时重放同一套数据；</li>
  *     <li>训练结束时把统计结果填进 {@link Session}。</li>
  * </ol>
  */
@@ -33,8 +36,8 @@ public class WorkoutRecorder implements ExerciseAnalyzer, RepListener, HoldListe
         void onHoldEnd(int attempt, long durationMs);
     }
 
-    /** 骨架录制的最小间隔（毫秒），约 20fps，兼顾流畅与体积。 */
-    private static final long MIN_RECORD_INTERVAL_MS = 45;
+    /** 超过这个时间没有新帧时，不能用旧姿势做校准。 */
+    private static final long MAX_CALIBRATION_AGE_MS = 750;
 
     private final Context context;
     private final Session session;
@@ -46,7 +49,11 @@ public class WorkoutRecorder implements ExerciseAnalyzer, RepListener, HoldListe
     private final PoseSmoother smoother = new PoseSmoother();
 
     private PoseLogWriter writer;
-    private long lastRecordedMs = -1;
+    private PoseFrame lastRawFrame;
+    private long lastFrameReceivedAt = -1;
+    private boolean lastFrameRecorded;
+    /** 少了任何判定帧都无法保证回放与实时计数一致。 */
+    private boolean poseLogComplete = true;
     private int frameCount;
     private boolean finished;
 
@@ -66,6 +73,9 @@ public class WorkoutRecorder implements ExerciseAnalyzer, RepListener, HoldListe
             repAnalyzer = analyzer;
             holdAnalyzer = null;
             delegate = analyzer;
+        }
+        if (delegate instanceof PersonalCalibrationAnalyzer) {
+            ((PersonalCalibrationAnalyzer) delegate).setPersonalCalibration(session.getInitialCalibration());
         }
     }
 
@@ -100,14 +110,21 @@ public class WorkoutRecorder implements ExerciseAnalyzer, RepListener, HoldListe
      * @param frame        原始关键点
      * @param sourceWidth  摆正后画面宽（用于骨架文件）
      * @param sourceHeight 摆正后画面高
+     * @param rollDegrees 本帧用于重力对齐的旋转角
      */
-    public void onPose(PoseFrame frame, int sourceWidth, int sourceHeight) {
+    public void onPose(PoseFrame frame, int sourceWidth, int sourceHeight, float rollDegrees) {
         if (finished || frame == null) {
             return;
         }
+        lastRawFrame = frame;
+        lastFrameReceivedAt = SystemClock.elapsedRealtime();
         PoseFrame filtered = smoother.smooth(frame);
+        lastFrameRecorded = false;
         if (recordPose) {
-            recordFrame(filtered, sourceWidth, sourceHeight);
+            int before = frameCount;
+            recordFrame(filtered, sourceWidth, sourceHeight, rollDegrees);
+            lastFrameRecorded = frameCount > before;
+            if (!lastFrameRecorded) poseLogComplete = false;
         }
         delegate.process(filtered);
     }
@@ -119,7 +136,7 @@ public class WorkoutRecorder implements ExerciseAnalyzer, RepListener, HoldListe
         delegate.process(frame);
     }
 
-    private void recordFrame(PoseFrame frame, int width, int height) {
+    private void recordFrame(PoseFrame frame, int width, int height, float rollDegrees) {
         if (width <= 0 || height <= 0) {
             return;
         }
@@ -134,12 +151,44 @@ public class WorkoutRecorder implements ExerciseAnalyzer, RepListener, HoldListe
                 return;
             }
         }
-        if (lastRecordedMs >= 0 && frame.getTimestampMs() - lastRecordedMs < MIN_RECORD_INTERVAL_MS) {
-            return;
+        // 每一帧既参与实时判定也参与回放；校准事件记录帧下标，避免漏帧导致次数变化。
+        int before = writer.getFrameCount();
+        writer.addFrame(frame, rollDegrees);
+        if (writer.getFrameCount() > before) frameCount++;
+    }
+
+    /**
+     * 确认当前帧并立即记一次。失败时返回可显示的原因，不更改设置或成绩。
+     * 主线程上串行处理相机回调与点击，使事件精确落在最近一帧之后。
+     */
+    public String calibratePersonal() {
+        if (finished || !(delegate instanceof PersonalCalibrationAnalyzer)) {
+            return "该动作暂不支持个人幅度校准";
         }
-        lastRecordedMs = frame.getTimestampMs();
-        writer.addFrame(frame);
-        frameCount++;
+        if (lastRawFrame == null || lastFrameReceivedAt < 0
+                || SystemClock.elapsedRealtime() - lastFrameReceivedAt > MAX_CALIBRATION_AGE_MS) {
+            return "没有新的姿态画面，请确认相机正在识别";
+        }
+        if (recordPose && (!lastFrameRecorded || !poseLogComplete)) {
+            return "骨架录制不完整，无法保存可回放的校准；请检查存储后开始新一组";
+        }
+        PersonalCalibrationAnalyzer analyzer = (PersonalCalibrationAnalyzer) delegate;
+        PersonalCalibration calibration = analyzer.capturePersonalCalibration(lastRawFrame);
+        if (calibration == null) return analyzer.getCalibrationError();
+        if (!calibration.isValid() || !calibration.matches(session.getExerciseType(), session.getVariant())) {
+            return "识别到的姿态参数不可靠，请调整后重试";
+        }
+        if (recordPose && (writer == null || !writer.flush())) {
+            return "骨架记录写入失败，本次未校准；请检查存储空间";
+        }
+        if (!UserStore.saveCalibration(context, session.getUserId(), calibration)) {
+            return "个人设置保存失败，请检查存储后重试";
+        }
+        if (recordPose && frameCount > 0) {
+            session.addCalibrationChange(frameCount - 1, calibration);
+        }
+        analyzer.applyCalibrationEvent(calibration);
+        return null;
     }
 
     public int getFrameCount() {
@@ -147,7 +196,7 @@ public class WorkoutRecorder implements ExerciseAnalyzer, RepListener, HoldListe
     }
 
     public boolean hasRecordedPose() {
-        return writer != null && frameCount > 0;
+        return writer != null && frameCount > 0 && poseLogComplete && !writer.hasError();
     }
 
     /**
@@ -178,6 +227,11 @@ public class WorkoutRecorder implements ExerciseAnalyzer, RepListener, HoldListe
             }
         }
         if (!hasRecordedPose()) {
+            File failedPose = SessionStore.resolveMedia(context, session.getUserId(), session.getPoseFile());
+            if (failedPose != null) {
+                //noinspection ResultOfMethodCallIgnored
+                failedPose.delete();
+            }
             session.setPoseFile(null);
         }
         return session;
@@ -217,6 +271,9 @@ public class WorkoutRecorder implements ExerciseAnalyzer, RepListener, HoldListe
     public void reset() {
         smoother.reset();
         delegate.reset();
+        lastRawFrame = null;
+        lastFrameReceivedAt = -1;
+        lastFrameRecorded = false;
     }
 
     @Override

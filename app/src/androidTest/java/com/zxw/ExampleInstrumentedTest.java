@@ -22,6 +22,8 @@ public class ExampleInstrumentedTest {
         // Context of the app under test.
         Context appContext = InstrumentationRegistry.getTargetContext();
 
-        assertEquals("com.zxw", appContext.getPackageName());
+        // debug 带 .dev 后缀，不覆盖正式版；release 则保留原包名。
+        String packageName = appContext.getPackageName();
+        assertTrue(packageName.equals("com.zxw.dev") || packageName.equals("com.zxw"));
     }
 }

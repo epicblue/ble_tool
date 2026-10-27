@@ -48,6 +48,8 @@ public class SkeletonOverlay extends View {
     private int sourceWidth = 9;
     private int sourceHeight = 16;
     private boolean mirrored;
+    /** v1 旧骨架为像素坐标；新骨架的 x/y 都按源画面宽度归一化。 */
+    private boolean pixelCoordinates;
     private boolean showSkeleton = true;
 
     public SkeletonOverlay(Context context) {
@@ -76,6 +78,14 @@ public class SkeletonOverlay extends View {
         if (width > 0 && height > 0 && (width != sourceWidth || height != sourceHeight)) {
             sourceWidth = width;
             sourceHeight = height;
+            invalidate();
+        }
+    }
+
+    /** 老版骨架文件保存了原始像素，回放时使用原来的坐标单位。 */
+    public void setPixelCoordinates(boolean pixels) {
+        if (pixelCoordinates != pixels) {
+            pixelCoordinates = pixels;
             invalidate();
         }
     }
@@ -124,8 +134,9 @@ public class SkeletonOverlay extends View {
             if (!f.isReliable(lm)) {
                 continue;
             }
-            float px = offsetX + f.getX(lm) * sourceWidth * scale;
-            float py = offsetY + f.getY(lm) * sourceHeight * scale;
+            float unit = pixelCoordinates ? 1f : sourceWidth;
+            float px = offsetX + f.getX(lm) * unit * scale;
+            float py = offsetY + f.getY(lm) * unit * scale;
             if (mirrored) {
                 px = viewWidth - px;
             }
