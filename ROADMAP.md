@@ -169,6 +169,7 @@
 
 ### 5.4 工程化
 
+- [x] 离线符号自查脚本 `tools/java_static_check.py`（无 SDK 时也能查“找不到符号”/参数个数/资源引用）
 - [ ] CI：GitHub Actions 跑 `testDebugUnitTest` + `assembleDebug`（缓存 SDK 与 Gradle）
 - [ ] Lint 基线化，逐步清零 `NewApi` / `Deprecated` 告警
 - [ ] 判定层单测覆盖率 ≥ 70%（Jacoco）

@@ -99,6 +99,11 @@ public class PushUpCounter implements RepAnalyzer {
         return TOP_ANGLE;
     }
 
+    /** 明显下放但未到位的角度上限（低于它才计"不标准"，否则视为抖动忽略）。 */
+    private float partialAngle() {
+        return isHandsOnChair() ? PARTIAL_ANGLE + 6f : PARTIAL_ANGLE;
+    }
+
     private boolean isHandsOnChair() {
         return "hands".equals(variant);
     }

@@ -54,6 +54,13 @@ gradlew.bat :app:assembleDebug        # 编译 APK
   （Settings → Build Tools → Gradle → Gradle JDK → 选 `jbr-17`）
 - AGP 8.7.3、Gradle 8.10.2、compileSdk 34、targetSdk 34、minSdk 21
 - 需要 SDK Platform 34 + Build-Tools 34.0.0（Studio 会提示自动安装）
+- 手边没有 SDK 时，可以先跑一遍离线符号自查（需要 Python 3 + `pip install javalang`）：
+  ```bash
+  pip install javalang
+  python3 tools/java_static_check.py
+  ```
+  它会检查“找不到符号”（未定义的本地方法/字段、`类名.成员`、`变量.成员`、`import com.zxw...`）、
+  方法参数个数、常量是否拼错等；**不检查类型兼容性**，不能替代真正的编译。
 - 依赖：CameraX 1.1.0、ML Kit Pose Detection 18.0.0（离线模型，画面不上传）
 
 > **不会覆盖手机上已安装的正式版**：debug 包的 `applicationId` 是 `com.zxw.dev`
