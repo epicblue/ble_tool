@@ -365,6 +365,55 @@ def avg_angle(f, aL, bL, cL, aR, bR, cR):
     return (l * cl + r * cr) / (cl + cr)
 
 
+# ---------------- 重力对齐（Java: pose/GravityAlign） ----------------
+ROLL_SIGN = 1.0
+DEAD_ZONE_DEG = 0.8
+MAX_ROLL_DEG = 60.0
+MIN_GRAVITY_XY = 3.0
+
+
+def normalize_deg(deg):
+    v = math.fmod(deg, 360.0)
+    if v > 180.0:
+        v -= 360.0
+    elif v <= -180.0:
+        v += 360.0
+    return v
+
+
+def roll_degrees(ax, ay):
+    """由加速度计读数算出需要施加给关键点的旋转角（度）。
+
+    推导见 Java 的 GravityAlign：静止时加速度计读到的是"上方向 × 9.81"，
+    画面 y 与设备 y 相反，手机拿正时方位角为 −90°，所以 ψ = −90 − α。
+    设备顺时针歪 θ 时读数 (sinθ, cosθ)·g，算出 ψ = −θ。
+    """
+    if math.hypot(ax, ay) < MIN_GRAVITY_XY:
+        return 0.0
+    alpha = math.degrees(math.atan2(-ay, ax))
+    psi = normalize_deg(-90.0 - alpha) * ROLL_SIGN
+    if abs(psi) < DEAD_ZONE_DEG or abs(psi) > MAX_ROLL_DEG:
+        return 0.0
+    return psi
+
+
+def rotate_frame(f, deg, cx=0.5, cy=0.5):
+    """绕画面中心旋转关键点；正值 = 屏幕上顺时针（y 向下的坐标系）。"""
+    if abs(deg) < 0.01:
+        return f
+    rad = math.radians(deg)
+    c, s = math.cos(rad), math.sin(rad)
+    pts = {}
+    for i, (x, y, z, conf) in f.p.items():
+        dx, dy = x - cx, y - cy
+        pts[i] = (cx + dx * c - dy * s, cy + dx * s + dy * c, z, conf)
+    return F(pts, f.ts)
+
+
+def align(f, roll):
+    return f if abs(roll) < DEAD_ZONE_DEG else rotate_frame(f, roll)
+
+
 # ---------------- 合成数据 ----------------
 def pushup(ts, elbow_deg, sag=0.0, kneel=False, chest_drop=0.0):
     """侧视角度俯卧撑。chest_drop>0 时整个身体随动作下沉（手/脚不动），

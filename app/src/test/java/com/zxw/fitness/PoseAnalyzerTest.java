@@ -19,6 +19,7 @@ import com.zxw.fitness.data.PoseLogWriter;
 import com.zxw.fitness.model.ExerciseType;
 import com.zxw.fitness.model.PoseFrame;
 import com.zxw.fitness.pose.BodyMetrics;
+import com.zxw.fitness.pose.GravityAlign;
 import com.zxw.fitness.pose.PoseMath;
 import com.zxw.fitness.pose.PoseSmoother;
 
@@ -521,6 +522,59 @@ public class PoseAnalyzerTest {
             }
         }
         return counter;
+    }
+
+    // ---------------- 横滚补偿 ----------------
+
+    @Test
+    public void gravityRollFromAccelerometer() {
+        float g = 9.81f;
+        assertEquals(0f, GravityAlign.rollDegrees(0f, g), 0.01f);                  // 手机拿正
+        assertEquals(-30f, GravityAlign.rollDegrees(g * 0.5f, g * 0.866f), 0.1f);   // 顺时针歪 30°
+        assertEquals(30f, GravityAlign.rollDegrees(-g * 0.5f, g * 0.866f), 0.1f);   // 逆时针歪 30°
+        assertEquals(0f, GravityAlign.rollDegrees(0.5f, 0.3f), 0.01f);             // 手机平放，不可信
+        assertEquals(0f, GravityAlign.rollDegrees(9.0f, 0.3f), 0.01f);             // 接近横放，超出可补偿范围
+    }
+
+    @Test
+    public void rollCompensationRestoresHolds() {
+        float g = 9.81f;
+        // 手机顺时针歪 30°：画面里的人看起来也是歪的，传感器算出的补偿角约为 −30°
+        float roll = GravityAlign.rollDegrees(g * 0.5f, g * 0.866f);
+
+        PlankTimer rawPlank = new PlankTimer(null);
+        PlankTimer fixedPlank = new PlankTimer(null);
+        WallSitTimer rawWall = new WallSitTimer(null);
+        WallSitTimer fixedWall = new WallSitTimer(null);
+        HandstandTimer rawHand = new HandstandTimer(ExerciseType.HANDSTAND, null);
+        HandstandTimer fixedHand = new HandstandTimer(ExerciseType.HANDSTAND, null);
+
+        long ts = 0;
+        for (int i = 0; i < 60; i++) {
+            PoseFrame plankTilted = GravityAlign.rotate(plank(ts, 0f, true), 30f);
+            rawPlank.process(plankTilted);
+            fixedPlank.process(GravityAlign.align(plankTilted, roll));
+
+            PoseFrame wallTilted = GravityAlign.rotate(wallSit(ts, 0f), 30f);
+            rawWall.process(wallTilted);
+            fixedWall.process(GravityAlign.align(wallTilted, roll));
+
+            PoseFrame handTilted = GravityAlign.rotate(handstand(ts, 0f, true), 30f);
+            rawHand.process(handTilted);
+            fixedHand.process(GravityAlign.align(handTilted, roll));
+
+            ts += FPS_STEP_MS;
+        }
+
+        // 补偿前：横滚把所有"水平/竖直"判据吃掉，成绩归零
+        assertEquals(0, rawPlank.getBestHoldMs());
+        assertEquals(0, rawWall.getBestHoldMs());
+        assertEquals(0, rawHand.getBestHoldMs());
+
+        // 补偿后：与手机拿正时一致
+        assertTrue("plank=" + fixedPlank.getBestHoldMs(), fixedPlank.getBestHoldMs() >= 3000);
+        assertTrue("wall=" + fixedWall.getBestHoldMs(), fixedWall.getBestHoldMs() >= 3000);
+        assertTrue("handstand=" + fixedHand.getBestHoldMs(), fixedHand.getBestHoldMs() >= 3000);
     }
 
     // ---------------- 倒立 ----------------

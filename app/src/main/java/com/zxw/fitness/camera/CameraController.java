@@ -1,6 +1,10 @@
 package com.zxw.fitness.camera;
 
 import android.content.Context;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
@@ -32,6 +36,7 @@ import com.google.mlkit.vision.pose.PoseDetector;
 import com.google.mlkit.vision.pose.PoseLandmark;
 import com.google.mlkit.vision.pose.accurate.AccuratePoseDetectorOptions;
 import com.zxw.fitness.model.PoseFrame;
+import com.zxw.fitness.pose.GravityAlign;
 
 import java.io.File;
 import java.util.List;
@@ -87,6 +92,33 @@ public class CameraController {
     private int uprightWidth;
     private int uprightHeight;
 
+    /** 加速度计（用于横滚补偿）。 */
+    private SensorManager sensorManager;
+    private Sensor accelerometer;
+    /** 最近一次算出的横滚补偿角（度），见 {@link GravityAlign}。 */
+    private volatile float rollDegrees;
+    /** 重力在画面平面上的投影是否可用（手机接近平放时为 false）。 */
+    private volatile boolean rollReliable;
+
+    private final SensorEventListener gravityListener = new SensorEventListener() {
+        @Override
+        public void onSensorChanged(SensorEvent event) {
+            float[] values = event.values;
+            if (values == null || values.length < 2) {
+                return;
+            }
+            rollReliable = GravityAlign.isReliable(values[0], values[1]);
+            rollDegrees = GravityAlign.isReliable(values[0], values[1])
+                    ? GravityAlign.rollDegrees(values[0], values[1])
+                    : 0f;
+        }
+
+        @Override
+        public void onAccuracyChanged(Sensor sensor, int accuracy) {
+            // 精度变化不影响补偿（低通已在传感器层完成）
+        }
+    };
+
     public CameraController(Context context, LifecycleOwner owner, PreviewView previewView,
                             Listener listener) {
         this.context = context.getApplicationContext();
@@ -107,12 +139,23 @@ public class CameraController {
         return uprightHeight;
     }
 
+    /** 当前横滚补偿角（度）：0 表示手机是正的。 */
+    public float getRollDegrees() {
+        return rollDegrees;
+    }
+
+    /** 横滚是否可信（手机接近平放时不可信，界面可提示"把手机竖起来"）。 */
+    public boolean isRollReliable() {
+        return rollReliable;
+    }
+
     /** 启动相机（需要已获得 CAMERA 权限）。 */
     public void start() {
         if (started) {
             return;
         }
         started = true;
+        startGravitySensor();
         final ListenableFuture<ProcessCameraProvider> future =
                 ProcessCameraProvider.getInstance(context);
         future.addListener(new Runnable() {
@@ -276,7 +319,44 @@ public class CameraController {
     public void stop() {
         started = false;
         stopRecording();
+        stopGravitySensor();
         release();
+    }
+
+    /** 注册加速度计：横滚补偿需要重力方向。传感器不可用时静默退化为不补偿。 */
+    private void startGravitySensor() {
+        if (sensorManager != null) {
+            return;
+        }
+        try {
+            sensorManager = (SensorManager) context.getSystemService(Context.SENSOR_SERVICE);
+            if (sensorManager == null) {
+                return;
+            }
+            accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+            if (accelerometer == null) {
+                Log.w(TAG, "设备没有加速度计，横滚补偿不可用");
+                return;
+            }
+            sensorManager.registerListener(gravityListener, accelerometer,
+                    SensorManager.SENSOR_DELAY_GAME);
+        } catch (Exception e) {
+            Log.w(TAG, "注册加速度计失败，横滚补偿不可用", e);
+            sensorManager = null;
+        }
+    }
+
+    private void stopGravitySensor() {
+        if (sensorManager != null) {
+            try {
+                sensorManager.unregisterListener(gravityListener);
+            } catch (Exception ignored) {
+                // ignore
+            }
+            sensorManager = null;
+        }
+        rollDegrees = 0f;
+        rollReliable = false;
     }
 
     /** 页面销毁时调用：释放相机、识别器并关闭线程池。 */
@@ -328,7 +408,9 @@ public class CameraController {
                     .addOnSuccessListener(new com.google.android.gms.tasks.OnSuccessListener<Pose>() {
                         @Override
                         public void onSuccess(Pose pose) {
-                            PoseFrame frame = toPoseFrame(pose, timestampMs);
+                            // 横滚补偿：手机歪着拿时把关键点转正，判定与录制的骨架都在这套坐标里
+                            PoseFrame frame = GravityAlign.align(toPoseFrame(pose, timestampMs),
+                                    rollDegrees);
                             int w = rotation % 180 == 0 ? imageWidth : imageHeight;
                             int h = rotation % 180 == 0 ? imageHeight : imageWidth;
                             uprightWidth = w;

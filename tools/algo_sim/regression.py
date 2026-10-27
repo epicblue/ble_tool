@@ -337,6 +337,60 @@ for _ in range(40):
 check('gait unknown when standing', c.gait() == 'UNKNOWN', c.gait())
 
 
+# H) 横滚补偿：手机歪着拿时成绩不再归零（Java: pose/GravityAlign）
+G_ACC = 9.81
+
+
+def _gravity(theta_deg):
+    rad = math.radians(theta_deg)
+    return G_ACC * math.sin(rad), G_ACC * math.cos(rad)
+
+
+for theta in (30.0, -30.0, 45.0):
+    ax, ay = _gravity(theta)
+    roll = roll_degrees(ax, ay)
+    check('roll from accelerometer (%+.0f°)' % theta, abs(roll + theta) < 0.1,
+          'roll=%+.1f' % roll)
+
+check('roll ignored when phone is flat',
+      roll_degrees(0.5, 0.3) == 0.0 and roll_degrees(0.0, 0.0) == 0.0, '')
+
+
+def _roll_hold(kind, theta):
+    """先按 theta 把画面转歪（模拟手机歪着拿），再按传感器算出的角补偿。"""
+    ax, ay = _gravity(theta)
+    roll = roll_degrees(ax, ay)
+    analyzer, ts, raw = None, 0, None
+    for compensated in (False, True):
+        if kind == 'plank':
+            analyzer = Plank()
+        elif kind == 'wall':
+            analyzer = WallSit()
+        else:
+            analyzer = Handstand()
+        ts = 0
+        for _ in range(60):
+            if kind == 'plank':
+                f = plank(ts, 0.0)
+            elif kind == 'wall':
+                f = wall_sit(ts, 0.0)
+            else:
+                f = handstand(ts, 0.0, True)
+            f = rotate_frame(f, theta)
+            if compensated:
+                f = align(f, roll)
+            analyzer.process(f)
+            ts += STEP
+        if compensated:
+            return raw, analyzer.best_ms()
+        raw = analyzer.best_ms()
+
+
+for kind, label in (('plank', 'plank'), ('wall', 'wall sit'), ('handstand', 'handstand')):
+    raw, fixed = _roll_hold(kind, 30.0)
+    check('roll compensation restores %s (+30°)' % label, raw == 0 and fixed >= 3000,
+          'raw=%dms fixed=%dms' % (raw, fixed))
+
 failed = [r for r in results if not r[1]]
 for name, ok, extra in results:
     print(('PASS  ' if ok else 'FAIL  ') + name.ljust(34) + ('[' + extra + ']' if extra else ''))

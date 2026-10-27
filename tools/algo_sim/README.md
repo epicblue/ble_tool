@@ -14,7 +14,7 @@
 
 ```bash
 cd <repo 根目录>
-python3 tools/algo_sim/regression.py     # 40 条行为断言，应全部 PASS
+python3 tools/algo_sim/regression.py     # 47 条行为断言，应全部 PASS
 python3 tools/algo_sim/experiments.py    # 输出 docs/algorithm-plan.md 里的实验表
 ```
 
@@ -23,7 +23,7 @@ python3 tools/algo_sim/experiments.py    # 输出 docs/algorithm-plan.md 里的�
 | 文件 | 内容 |
 | --- | --- |
 | `replica.py` | 判定器复刻：`PushUp` / `Squat` / `PullUp` / `Plank` / `Handstand` / `WallSit` / `RunSteps`，以及 `body_metrics`、合成帧生成器 |
-| `regression.py` | 与 `PoseAnalyzerTest` 对应的行为断言（40 条） |
+| `regression.py` | 与 `PoseAnalyzerTest` 对应的行为断言（47 条） |
 | `experiments.py` | 横滚、镜头斜对、距离、帧率、单侧污染、走/跑、宽限期 七组实验 |
 
 ## 约定
