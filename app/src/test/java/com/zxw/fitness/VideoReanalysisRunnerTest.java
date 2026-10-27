@@ -99,7 +99,7 @@ public class VideoReanalysisRunnerTest {
         assertEquals(fake.requested, fake.closedImages);
         assertEquals(Arrays.asList(1, 2, 3, 4, 5), progress);
         assertTrue(fake.sourceClosed && fake.engineClosed);
-        assertEquals(Boolean.TRUE, fake.everyFrame);
+        assertEquals(Boolean.FALSE, fake.everyFrame);
         assertEquals(5, result.size());
         assertEquals(100, result.getIntervalMs());
         assertEquals(450, result.getDurationMs());
@@ -113,7 +113,7 @@ public class VideoReanalysisRunnerTest {
         assertEquals(3, result.getTimeline().indexAt(300));
         assertEquals(4, result.getTimeline().indexAt(999));
 
-        PoseSmoother direct = new PoseSmoother(true);
+        PoseSmoother direct = new PoseSmoother();
         SquatCounter counter = new SquatCounter(null);
         FrameGapGuard guard = new FrameGapGuard();
         for (int i = 0; i < result.size(); i++) {
@@ -202,7 +202,7 @@ public class VideoReanalysisRunnerTest {
             FakeFactory fake = new FakeFactory();
             fake.duration = 1;
             VideoReanalysisRunner.run(fake, session(type), null, null);
-            assertEquals("Wrong mode for " + type, type == ExerciseType.SQUAT, fake.everyFrame.booleanValue());
+            assertFalse("所有动作应使用连续跟踪: " + type, fake.everyFrame.booleanValue());
         }
     }
 
@@ -280,18 +280,90 @@ public class VideoReanalysisRunnerTest {
         }
     }
 
-    @Test public void squatPanIsReprocessedWithCoherentRecovery() throws Exception {
-        FakeFactory fake = new FakeFactory();
-        fake.duration = 3000;
-        fake.poses = t -> {
-            float dx = t < 400 ? -.12f : .04f + Math.min(16, (t - 400) / 100f) * .008f;
-            return shiftLandmarks(squat(t, 170f, 0f), dx, 0f, PoseFrame.LANDMARK_SUBSET);
-        };
-        VideoPoseReanalysis result = VideoReanalysisRunner.run(fake, session(ExerciseType.SQUAT), null, null);
-        assertTrue("跳变时应能看到原始点待滤波", result.getPendingJumps(4)[PoseFrame.LEFT_SHOULDER]);
-        PoseFrame end = result.getFilteredFrame(result.size() - 1);
-        assertTrue("深蹲横移后应重新接纳可信点", end.isReliable(PoseFrame.LEFT_SHOULDER));
-        assertEquals(result.getRawFrame(result.size() - 1).getX(PoseFrame.LEFT_SHOULDER),
-                end.getX(PoseFrame.LEFT_SHOULDER), .04f);
+    /** 两个互相独立的检测器，覆盖真实流水线中重建候选/关闭资源的分支。 */
+    private static class RecoveryFactory implements VideoReanalysisRunner.Factory<Long> {
+        final List<Boolean> modes = new ArrayList<>();
+        final List<Integer> closed = new ArrayList<>();
+        final List<Long> closedImages = new ArrayList<>();
+        boolean sourceClosed, candidateIncomplete, candidateThrows, cancelCandidate, cancelled, stationary;
+        long duration = 2500;
+        @Override public VideoReanalysisRunner.FrameSource<Long> openSource() {
+            return new VideoReanalysisRunner.FrameSource<Long>() {
+                @Override public long durationMs() { return duration; }
+                @Override public ImageFrame<Long> frameAt(final long t) {
+                    return new ImageFrame<Long>() {
+                        @Override public Long image() { return t; }
+                        @Override public int width() { return 720; }
+                        @Override public int height() { return 1280; }
+                        @Override public void close() { closedImages.add(t); }
+                    };
+                }
+                @Override public void close() { sourceClosed = true; }
+            };
+        }
+        @Override public VideoReanalysisRunner.PoseEngine<Long> openEngine(boolean every) {
+            modes.add(every);
+            final int index = modes.size() - 1;
+            return new VideoReanalysisRunner.PoseEngine<Long>() {
+                @Override public PoseFrame detect(ImageFrame<Long> image, long t) throws Exception {
+                    PoseFrame raw = shiftLandmarks(withFullVisibleSkeleton(standing(t)), stationary ? 0f : .002f * (t / 100f),
+                            0f, PoseFrame.LEFT_WRIST);
+                    if (index == 0) return raw;
+                    if (cancelCandidate) cancelled = true;
+                    if (candidateThrows) throw new IOException("candidate failed");
+                    PoseFrame fresh = shiftLandmarks(raw, .02f, 0f, PoseFrame.LEFT_SHOULDER,
+                            PoseFrame.RIGHT_SHOULDER, PoseFrame.LEFT_HIP, PoseFrame.RIGHT_HIP);
+                    return candidateIncomplete ? lowerConfidence(fresh, 0f, PoseFrame.LEFT_SHOULDER,
+                            PoseFrame.RIGHT_SHOULDER) : fresh;
+                }
+                @Override public void close() { closed.add(index); }
+            };
+        }
+    }
+
+    @Test public void frozenVideoRetriesOnlyOnceAndAdoptsCompleteFreshStream() throws Exception {
+        RecoveryFactory f = new RecoveryFactory();
+        VideoPoseReanalysis result = VideoReanalysisRunner.run(f, session(ExerciseType.SQUAT), null, null);
+        assertEquals(Arrays.asList(false, false), f.modes);
+        assertEquals(Arrays.asList(0, 1), f.closed);
+        assertEquals(25, f.closedImages.size());
+        assertTrue(f.sourceClosed);
+        assertEquals(.47f, result.getRawFrame(20).getX(PoseFrame.LEFT_SHOULDER), .0001f);
+        assertEquals(.47f, result.getRawFrame(21).getX(PoseFrame.LEFT_SHOULDER), .0001f);
+    }
+
+    @Test public void rejectedOrFailedFreshStreamKeepsOriginalAndReleasesCandidate() throws Exception {
+        for (boolean incomplete : new boolean[]{true, false}) {
+            RecoveryFactory f = new RecoveryFactory();
+            f.candidateIncomplete = incomplete;
+            f.candidateThrows = !incomplete;
+            VideoPoseReanalysis result = VideoReanalysisRunner.run(f, session(ExerciseType.SQUAT), null, null);
+            assertEquals(Arrays.asList(false, false), f.modes);
+            assertEquals(Arrays.asList(1, 0), f.closed);
+            assertEquals(.45f, result.getRawFrame(20).getX(PoseFrame.LEFT_SHOULDER), .0001f);
+            assertTrue(f.sourceClosed);
+            assertEquals(25, f.closedImages.size());
+        }
+    }
+
+    @Test public void noFrozenPatternOrOtherExerciseNeverOpensCandidate() throws Exception {
+        RecoveryFactory still = new RecoveryFactory(); still.stationary = true;
+        VideoReanalysisRunner.run(still, session(ExerciseType.SQUAT), null, null);
+        assertEquals(Arrays.asList(false), still.modes);
+        RecoveryFactory push = new RecoveryFactory();
+        VideoReanalysisRunner.run(push, session(ExerciseType.PUSHUP), null, null);
+        assertEquals(Arrays.asList(false), push.modes);
+    }
+
+    @Test public void cancellationDuringFreshDetectionReleasesBothStreamsAndImage() throws Exception {
+        RecoveryFactory f = new RecoveryFactory(); f.cancelCandidate = true;
+        try {
+            VideoReanalysisRunner.run(f, session(ExerciseType.SQUAT), () -> f.cancelled, null);
+            fail("取消不能发布部分结果");
+        } catch (VideoReanalysisRunner.Cancelled expected) {
+            assertEquals(Arrays.asList(1, 0), f.closed);
+            assertEquals(21, f.closedImages.size());
+            assertTrue(f.sourceClosed);
+        }
     }
 }

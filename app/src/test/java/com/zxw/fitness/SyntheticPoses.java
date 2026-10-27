@@ -376,6 +376,25 @@ final class SyntheticPoses {
         return PoseFrame.of(f.getTimestampMs(), x, y, z, c);
     }
 
+    /** 为冻结检测合成全部 17 个可靠的可见点，不改变其他算法的默认测试帧。 */
+    static PoseFrame withFullVisibleSkeleton(PoseFrame f) {
+        float[] x = new float[PoseFrame.LANDMARK_COUNT];
+        float[] y = new float[PoseFrame.LANDMARK_COUNT];
+        float[] z = new float[PoseFrame.LANDMARK_COUNT];
+        float[] c = new float[PoseFrame.LANDMARK_COUNT];
+        for (int i = 0; i < PoseFrame.LANDMARK_COUNT; i++) {
+            x[i] = f.getX(i); y[i] = f.getY(i); z[i] = f.getZ(i); c[i] = f.getConfidence(i);
+        }
+        if (c[PoseFrame.NOSE] < .5f) {
+            x[PoseFrame.NOSE] = .45f; y[PoseFrame.NOSE] = .20f; c[PoseFrame.NOSE] = .9f;
+        }
+        for (int index : new int[]{PoseFrame.LEFT_HEEL, PoseFrame.RIGHT_HEEL,
+                PoseFrame.LEFT_FOOT_INDEX, PoseFrame.RIGHT_FOOT_INDEX}) {
+            x[index] = .45f; y[index] = .88f; c[index] = .9f;
+        }
+        return PoseFrame.of(f.getTimestampMs(), x, y, z, c);
+    }
+
     static float[] repProfile(float bottomAngle, float topAngle, int framesPerHalf) {
         int nDown = framesPerHalf;
         int nUp = framesPerHalf;

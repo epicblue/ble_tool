@@ -43,7 +43,6 @@ import com.zxw.fitness.model.Session;
 import com.zxw.fitness.model.UserProfile;
 import com.zxw.fitness.pose.PoseSceneDiagnostics;
 import com.zxw.fitness.pose.PoseSceneResult;
-import com.zxw.fitness.pose.PoseSmoother;
 import com.zxw.fitness.util.TimeUtils;
 
 import java.io.File;
@@ -59,7 +58,6 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
 
     public static final String EXTRA_EXERCISE = "exercise";
     public static final String EXTRA_VARIANT = "variant";
-    public static final String EXTRA_SQUAT_STREAM_MODE = "squat_stream_mode";
 
     private static final int REQ_CAMERA = 201;
     private static final long TICK_MS = 100;
@@ -89,7 +87,6 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
 
     private ExerciseType exerciseType;
     private String variant;
-    private boolean squatStreamMode;
     private UserProfile user;
 
     private CameraController camera;
@@ -109,6 +106,8 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
     private long lastPoseReceivedAt = -1;
     private long lastSceneUpdateAt = -1;
     private long slowFrameWarningUntil = -1;
+    private long recoveryNoticeUntil = -1;
+    private String recoveryNotice = "";
 
     @Override
     public Lifecycle getLifecycle() {
@@ -124,8 +123,6 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
 
         exerciseType = ExerciseType.fromKey(getIntent().getStringExtra(EXTRA_EXERCISE));
         variant = getIntent().getStringExtra(EXTRA_VARIANT);
-        squatStreamMode = exerciseType == ExerciseType.SQUAT
-                && getIntent().getBooleanExtra(EXTRA_SQUAT_STREAM_MODE, false);
         user = UserStore.getCurrent(this);
 
         bindViews();
@@ -165,14 +162,9 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
         String calibrationHelp = exerciseType.supportsPersonalCalibration()
                 ? "\n\n个人校准：先回到起始位，再保持在当前能做到的最好位置，点击「个人校准 +1」。"
                 + "立即记一次并保存目标；回到起始位后继续。独自训练可长按按钮，5 秒后自动采样。" : "";
-        String squatHelp = exerciseType == ExerciseType.SQUAT
-                ? (squatStreamMode
-                    ? "\n\n本次使用连续跟踪：较快，但横移镜头可能跟错。"
-                    : "\n\n本次逐帧重新找人：可能较慢；持续卡顿时可返回列表选择连续跟踪。")
-                : "";
         tvHintBody.setText(exerciseType.getDescription() + "\n\n"
                 + "手机竖直固定，整个人保持在画面内；光线充足、背景干净识别更准。"
-                + squatHelp + calibrationHelp);
+                + calibrationHelp);
         updateCalibrationIndicator();
         tvStatus.setText("点击「开始训练」");
         progress.setMax(100);
@@ -324,9 +316,8 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
         if (camera != null) {
             return;
         }
-        // 模式在进训练页前选定；不在训练或录像期间替换检测器。
-        boolean detectEveryFrame = exerciseType == ExerciseType.SQUAT && !squatStreamMode;
-        camera = new CameraController(this, this, previewView, this, detectEveryFrame);
+        camera = new CameraController(this, this, previewView, this,
+                exerciseType == ExerciseType.SQUAT);
         camera.start();
         overlay.setMirrored(camera.isFrontCamera());
     }
@@ -635,6 +626,12 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
             //noinspection ResultOfMethodCallIgnored
             pose.delete();
         }
+        File timeline = session == null ? null : SessionStore.resolveMedia(this, session.getUserId(),
+                session.getTimelineFile());
+        if (timeline != null && timeline.exists()) {
+            //noinspection ResultOfMethodCallIgnored
+            timeline.delete();
+        }
     }
 
     private void resetUi() {
@@ -707,6 +704,8 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
         handler.removeCallbacksAndMessages(null);
         // 兜底：录像 finalize 回调还没到就退出时，避免丢掉本次成绩
         if (!sessionSaved && session != null && recorder != null && recorder.hasResult()) {
+            // 非正常退出兜底也要关闭骨架/逐帧文件并汇总，不能保存未完成的缓存。
+            if (!recorder.isFinished()) recorder.finish(System.currentTimeMillis());
             sessionSaved = true;
             SessionStore.save(this, session);
         }
@@ -740,10 +739,7 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
                        int uprightWidth, int uprightHeight, float rollDegrees) {
         if (!lifecycleRegistry.getCurrentState().isAtLeast(Lifecycle.State.RESUMED)) return;
         long now = SystemClock.elapsedRealtime();
-        // 深蹲重捕获还要求候选帧相隔不超过 350ms；回调间隔只是性能提示，不改判定门槛。
-        long slowGapMs = exerciseType == ExerciseType.SQUAT ? PoseSmoother.MAX_CANDIDATE_GAP_MS
-                : FrameGapGuard.MAX_FRAME_GAP_MS;
-        if (lastPoseReceivedAt >= 0 && now - lastPoseReceivedAt > slowGapMs) {
+        if (lastPoseReceivedAt >= 0 && now - lastPoseReceivedAt > FrameGapGuard.MAX_FRAME_GAP_MS) {
             slowFrameWarningUntil = now + 2000;
         }
         lastPoseReceivedAt = now;
@@ -767,17 +763,24 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
             boolean slow = now < slowFrameWarningUntil;
             // 警告靠前放，窄屏最多显示四行时也不被长诊断挤掉。
             String timingText = slow ? "识别偏慢，可能漏计或难以恢复 · " : "";
-            String modeText = exerciseType == ExerciseType.SQUAT
-                    ? (squatStreamMode ? "连续跟踪 · " : "逐帧重检 · ") : "";
+
+            String notice = now < recoveryNoticeUntil ? recoveryNotice + " · " : "";
             String legend = showMarkerDetails ? "绿≥50% 黄30–49% 紫=待定；无点=缺失/出画"
                     : "详细标记已关闭；基本骨架仍显示";
-            tvSceneDiagnosis.setText(modeText + timingText + "原始 " + result.reliablePoints + "/" + result.totalPoints
+            tvSceneDiagnosis.setText(notice + timingText + "原始 " + result.reliablePoints + "/" + result.totalPoints
                     + " · " + result.message + pendingText + "\n" + legend);
             int color = result.quality == PoseSceneResult.Quality.USABLE && pendingCount == 0 && !slow
                     ? R.color.fit_text : R.color.fit_warn;
             tvSceneDiagnosis.setTextColor(ContextCompat.getColor(this, color));
             lastSceneUpdateAt = now;
         }
+    }
+
+    @Override
+    public void onPoseRecovery(boolean accepted) {
+        recoveryNotice = accepted ? "疑似冻结，已尝试重新定位" : "疑似冻结，候选不可靠，保留原跟踪";
+        recoveryNoticeUntil = SystemClock.elapsedRealtime() + 3000;
+        lastSceneUpdateAt = -1;
     }
 
     @Override

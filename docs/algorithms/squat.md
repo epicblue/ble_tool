@@ -14,14 +14,13 @@
 
 个人校准使用连续三帧建立保守起始基准，并检查当前原始/滤波测量的差异及最小移动；成功立即记一次并保存个人深度、起始角、最低移动量和前倾容忍，回到个人站立门槛才能继续。它不是医学或安全标准。
 
-## 镜头横移后的恢复
+## 疑似骨架冻结时的恢复
 
-- **模型原始骨架**：进入深蹲前选「逐帧重新找人」时，Accurate 每张图重新检测人物，不使用流式人体跟踪；可尝试减少跟踪区域偏移的影响，但不保证识别正确、同一人被选中或折叠姿态一定消失。它可能比「连续跟踪」慢；持续卡顿可退出到动作列表重选较快模式，训练及录像期间不替换检测器。
-- **判定滤波**：至少一侧肩、髋、踝的入画值 ≥`0.65`，它们相对各自旧位置的横向位移中位数需超过 `max(0.12, 0.6×躯干尺度)`；所有参与点与中位数差 ≤`max(0.03, 0.25×躯干尺度)`。同一组点保持同向、前后位移差 ≤`max(0.04, 0.3×躯干尺度)`，候选间隔 ≤`350 ms`，至少 `3` 帧、`700 ms`。缺点、集合或方向变化、位移不连贯会重新累计；单侧肩髋踝完整也能参与。
-- **防误计**：若之前出现过可靠躯干和同侧髋膝踝，需距离最近这样的滤波帧 **超过 `500 ms`** 才能按整体候选恢复；一旦出现横移证据，即使中途缺点使候选重新累计，逐点重捕获也需等待，避免把失踪前后的半次动作拼起来。如果跟踪回到连续完整可见状态且不再有横移候选，持续 `700 ms` 后也解除等待，防止单点长期锁住。确认整体横移后，每个点的横移与中位数偏差还须 ≤跳变阈值，纵向位移 ≤`max(0.18, 1.2×躯干尺度)`；不符合的点本帧继续暂拒，包括恰好跳回旧位置的异常点。恢复期间不会主动清除已有成绩或个人校准。
-- **速度与回放**：深蹲回调间隔超过 `350 ms` 时界面提示识别偏慢；这是回调间隔提示，与采集时间戳不完全相同。`FrameGapGuard` 的 `>500 ms` 失效通知没有放宽；频繁慢帧可能导致无法恢复或漏计。录制文件仍是滤波帧；带视频回放默认抽帧重新找人并显示新滤波骨架，可切换新原始点与录制骨架对比。新识别计数不含重力补偿和组内校准事件，仅供参考；采样、设备方向及两者对齐仍需真机验证。
-
-以上是关键点几何代理，不是相机运动/多人身份检测。单点持续错误、人体遮挡、缩放、旋转或多个人进出可能无法恢复或导致误判；稳定手机、光线充足、全身入镜仍更可靠。当前缺少用户设备的原始轨迹，尚不能判断折叠骨架的根因。
+- 训练恢复为 ML Kit Accurate `STREAM_MODE` 连续跟踪，以及所有动作共用的旧逐点 `PoseSmoother`；不再提供上次的逐帧找人选项，也不再进行整体横移滤波。
+- 仅深蹲检查**滤波和重力旋转前**的原始坐标，与屏幕上的点相同。17 个显示点均须入画且置信度 ≥0.5，肩、髋、膝、踝完整；点集合与画面尺寸须保持不变。连续至少 8 帧、2 秒，帧间隔 ≤500ms，恰有 1–2 点相对起点位移 ≥0.015 个画面宽，至少 15 点位移 ≤0.0004 个画面宽，且没有介于两者的点，才尝试重新找人。时间回退、重复、丢点、低置信或画面尺寸变化会清除证据；每次尝试后冷却 8 秒。
+- 新建一个 `STREAM_MODE` 检测器处理同一画面。候选至少 8 个可靠点，且一侧肩/髋/膝/踝完整，并有至少 3 个原先静止点产生 ≥0.0025 个画面宽的变化才替换旧跟踪器；仅检测到腿、未改善或推理失败时继续使用原跟踪。训练成绩和个人校准不主动清空。App 自己不会在平时每帧重建检测器，ML Kit 内部的跟踪行为仍由 SDK 决定。
+- 这些阈值是保守的启发式，**不证明发生了模型冻结或找到了同一个人**：正常单肢动作也可能具有相似轨迹，轻微抖动、遮挡或慢帧则可能使真实冻结漏检。候选即使通过也未保证点位准确；多人同框尤其可能换人。尚无该设备的轨迹与准确率验证。
+- 原有滤波仍会对大跳变等待稳定后重捕获，实时骨架显示原始点。新版本录制逐帧结果，同版回放无需重算；旧版或损坏时回退。手动视频重识别无训练时的横滚补偿和组内校准事件，只供对比。
 
 ## 适用场景与优缺点
 
@@ -35,4 +34,4 @@
 
 ## 核对与验证
 
-实现：[SquatCounter.java](../../app/src/main/java/com/zxw/fitness/analysis/SquatCounter.java)、[PoseSmoother.java](../../app/src/main/java/com/zxw/fitness/pose/PoseSmoother.java)；合成用例：[SquatPanRecoveryTest.java](../../app/src/test/java/com/zxw/fitness/SquatPanRecoveryTest.java)、[SquatPanRecorderTest.java](../../app/src/androidTest/java/com/zxw/fitness/SquatPanRecorderTest.java)、[PoseAnalyzerTest.java](../../app/src/test/java/com/zxw/fitness/PoseAnalyzerTest.java)、[PersonalCalibrationTest.java](../../app/src/test/java/com/zxw/fitness/PersonalCalibrationTest.java)。真机应区分完整蹲、浅蹲、只动膝、躯干倾斜、横移和丢点，人工标注计数与原因；现有回归不提供人体识别准确率。
+实现：[SquatCounter.java](../../app/src/main/java/com/zxw/fitness/analysis/SquatCounter.java)、[PoseSmoother.java](../../app/src/main/java/com/zxw/fitness/pose/PoseSmoother.java)；合成用例：[FrozenPoseRecoveryTest.java](../../app/src/test/java/com/zxw/fitness/FrozenPoseRecoveryTest.java)、[RecorderVersionIntegrationTest.java](../../app/src/androidTest/java/com/zxw/fitness/RecorderVersionIntegrationTest.java)、[PoseAnalyzerTest.java](../../app/src/test/java/com/zxw/fitness/PoseAnalyzerTest.java)、[PersonalCalibrationTest.java](../../app/src/test/java/com/zxw/fitness/PersonalCalibrationTest.java)。真机应区分完整蹲、浅蹲、单肢活动、躯干倾斜、折叠冻结、横移和丢点，人工标注计数与原因；现有回归不提供人体识别准确率。

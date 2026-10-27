@@ -1,8 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <uses-permission android:name="android.permission.BLUETOOTH"/>
-    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN"/>
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30"/>
+    <!-- 不使用 neverForLocation，避免过滤 BLE beacon；扫描时请求精确位置。 -->
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="true"/>
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
@@ -21,7 +24,7 @@
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
         <activity
-            android:name=".MainActivity"
+            android:name="com.zxw.MainActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -30,31 +33,31 @@
             </intent-filter>
         </activity>
         <activity
-            android:name=".ui.Ble_Activity"></activity>
+            android:name="com.zxw.ui.Ble_Activity"></activity>
         <service android:name="com.zxw.service.BluetoothLeService" android:enabled="true"></service>
-        <activity android:name=".ui.DebugActivity"
+        <activity android:name="com.zxw.ui.DebugActivity"
             android:resizeableActivity="true"/>
 
         <!-- 人体姿态捕捉模块 -->
         <activity
-            android:name=".fitness.ui.ProfileActivity"
+            android:name="com.zxw.fitness.ui.ProfileActivity"
             android:screenOrientation="portrait"
             android:theme="@style/FitnessTheme" />
         <activity
-            android:name=".fitness.ui.ExerciseListActivity"
+            android:name="com.zxw.fitness.ui.ExerciseListActivity"
             android:screenOrientation="portrait"
             android:theme="@style/FitnessTheme" />
         <activity
-            android:name=".fitness.ui.HistoryActivity"
+            android:name="com.zxw.fitness.ui.HistoryActivity"
             android:screenOrientation="portrait"
             android:theme="@style/FitnessTheme" />
         <activity
-            android:name=".fitness.ui.TrainingActivity"
+            android:name="com.zxw.fitness.ui.TrainingActivity"
             android:configChanges="keyboardHidden|orientation|screenSize"
             android:screenOrientation="portrait"
             android:theme="@style/FitnessTheme" />
         <activity
-            android:name=".fitness.ui.ReplayActivity"
+            android:name="com.zxw.fitness.ui.ReplayActivity"
             android:configChanges="keyboardHidden|orientation|screenSize"
             android:screenOrientation="portrait"
             android:theme="@style/FitnessTheme" />

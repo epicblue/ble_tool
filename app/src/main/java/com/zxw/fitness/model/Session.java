@@ -24,6 +24,9 @@ public class Session {
     /** 所有组的有效累计；-1 表示旧记录没有保存此值，不能用最长单组冒充累计。 */
     private long totalHoldMs = -1;
     private boolean wallContact;
+    /** 旧记录为 null：无法假定它使用当前算法。 */
+    private String algorithmVersion;
+    private String timelineFile;
     private String poseFile;
     private String videoFile;
     private String thumbFile;
@@ -152,6 +155,14 @@ public class Session {
     public void setWallContact(boolean wallContact) {
         this.wallContact = wallContact;
     }
+
+    public String getAlgorithmVersion() { return algorithmVersion; }
+
+    public void setAlgorithmVersion(String version) { algorithmVersion = version; }
+
+    public String getTimelineFile() { return timelineFile; }
+
+    public void setTimelineFile(String file) { timelineFile = file; }
 
     public String getPoseFile() {
         return poseFile;

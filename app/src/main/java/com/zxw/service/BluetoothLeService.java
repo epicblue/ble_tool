@@ -46,11 +46,11 @@ public class BluetoothLeService extends Service {
     private static final int STATE_CONNECTING = 1;
     private static final int STATE_CONNECTED = 2;
 
-    public final static String ACTION_GATT_CONNECTED = "com.zxw_ble.bluetooth.le.ACTION_GATT_CONNECTED";
-    public final static String ACTION_GATT_DISCONNECTED = "com.zxw_ble.bluetooth.le.ACTION_GATT_DISCONNECTED";
-    public final static String ACTION_GATT_SERVICES_DISCOVERED = "com.zxw_ble.bluetooth.le.ACTION_GATT_SERVICES_DISCOVERED";
-    public final static String ACTION_DATA_AVAILABLE = "com.zxw_ble.bluetooth.le.ACTION_DATA_AVAILABLE";
-    public final static String EXTRA_DATA = "com.zxw_ble.bluetooth.le.EXTRA_DATA";
+    public final static String ACTION_GATT_CONNECTED = "com.epicblue.bluetooth.le.ACTION_GATT_CONNECTED";
+    public final static String ACTION_GATT_DISCONNECTED = "com.epicblue.bluetooth.le.ACTION_GATT_DISCONNECTED";
+    public final static String ACTION_GATT_SERVICES_DISCOVERED = "com.epicblue.bluetooth.le.ACTION_GATT_SERVICES_DISCOVERED";
+    public final static String ACTION_DATA_AVAILABLE = "com.epicblue.bluetooth.le.ACTION_DATA_AVAILABLE";
+    public final static String EXTRA_DATA = "com.epicblue.bluetooth.le.EXTRA_DATA";
 
     public boolean mSendState = true;
 
@@ -218,14 +218,14 @@ public class BluetoothLeService extends Service {
     //广播意图
     private void broadcastUpdate(final String action, int rssi)
     {
-        final Intent intent = new Intent(action);
+        final Intent intent = new Intent(action).setPackage(getPackageName());
         intent.putExtra(EXTRA_DATA, String.valueOf(rssi));
         sendBroadcast(intent);
     }
     //广播意图
     private void broadcastUpdate(final String action)
     {
-        final Intent intent = new Intent(action);
+        final Intent intent = new Intent(action).setPackage(getPackageName());
         sendBroadcast(intent);
     }
 
@@ -233,7 +233,7 @@ public class BluetoothLeService extends Service {
     public void broadcastUpdate(final String action,
                                 final BluetoothGattCharacteristic characteristic)
     {
-        final Intent intent = new Intent(action);
+        final Intent intent = new Intent(action).setPackage(getPackageName());
         //从特征值获取数据
         final byte[] data = characteristic.getValue();
         Ble_Activity.revDataForCharacteristic =data;

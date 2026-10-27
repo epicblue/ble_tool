@@ -76,6 +76,8 @@ public class MainActivity extends BasActivity implements OnClickListener {
     int REQUEST_ENABLE_BT = 1;
     // 蓝牙扫描时间
     private static final long SCAN_PERIOD = 10000;
+    private static final int REQUEST_BLE_PERMISSIONS = 2;
+    private int scanGeneration;
 
     @Override
     protected void onCreate(Bundle savedInstanceState)
@@ -83,8 +85,7 @@ public class MainActivity extends BasActivity implements OnClickListener {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        //申请位置权限
-        initPermissions();
+        // 训练入口不依赖蓝牙或位置授权；仅在点击扫描时请求。
         // 初始化控件
         init();
         // 初始化蓝牙
@@ -105,26 +106,28 @@ public class MainActivity extends BasActivity implements OnClickListener {
                                     long id)
             {
                 // TODO Auto-generated method stub
+                if (!hasBlePermissions()) {
+                    requestBlePermissions();
+                    return;
+                }
                 final BluetoothMessage bluetoothMessage = mleDeviceListAdapter
                         .getDevice(position);
                 if (bluetoothMessage == null)
                     return;
                 final Intent intent = new Intent(MainActivity.this,
                         Ble_Activity.class);
-                intent.putExtra(Ble_Activity.EXTRAS_DEVICE_NAME,
-                        bluetoothMessage.getName()!=null?bluetoothMessage.getName():bluetoothMessage.getDevice().getName());
-                intent.putExtra(Ble_Activity.EXTRAS_DEVICE_ADDRESS,
-                        bluetoothMessage.getDevice().getAddress());
+                try {
+                    intent.putExtra(Ble_Activity.EXTRAS_DEVICE_NAME,
+                            bluetoothMessage.getName()!=null?bluetoothMessage.getName():bluetoothMessage.getDevice().getName());
+                    intent.putExtra(Ble_Activity.EXTRAS_DEVICE_ADDRESS,
+                            bluetoothMessage.getDevice().getAddress());
+                } catch (SecurityException revoked) {
+                    Toast.makeText(MainActivity.this, "蓝牙权限已撤销", Toast.LENGTH_SHORT).show();
+                    return;
+                }
                 intent.putExtra(Ble_Activity.EXTRAS_DEVICE_RSSI,
                         rssis.get(position).toString());
-                if (mScanning) {
-                    /* 停止扫描设备 */
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)
-                        mBluetoothLeScanner.stopScan(mScanCallback);
-                    else
-                        mBluetoothAdapter.stopLeScan(mLeScanCallback);
-                    mScanning = false;
-                }
+                if (mScanning) scanLeDevice(false);
 
                 try {
                     // 启动Ble_Activity
@@ -177,31 +180,13 @@ public class MainActivity extends BasActivity implements OnClickListener {
      * @return void
      * @throws
      */
-    private void init_ble()
-    {
-        // 手机硬件支持蓝牙
-        if (!getPackageManager().hasSystemFeature(
-                PackageManager.FEATURE_BLUETOOTH_LE))
-        {
-            Toast.makeText(this, "不支持BLE", Toast.LENGTH_SHORT).show();
-            finish();
+    private void init_ble() {
+        if (!getPackageManager().hasSystemFeature(PackageManager.FEATURE_BLUETOOTH_LE)) {
+            Toast.makeText(this, "不支持BLE，仍可使用体能训练", Toast.LENGTH_SHORT).show();
+            return;
         }
-        // Initializes Bluetooth adapter.
-        // 获取手机本地的蓝牙适配器
-        final BluetoothManager bluetoothManager = (BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)
-            mBluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
-        else
-            mBluetoothAdapter = bluetoothManager.getAdapter();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)
-            mBluetoothLeScanner = mBluetoothAdapter.getBluetoothLeScanner();
-        // 打开蓝牙权限
-        if (mBluetoothAdapter == null || !mBluetoothAdapter.isEnabled()) {
-            Intent enableBtIntent = new Intent(
-                    BluetoothAdapter.ACTION_REQUEST_ENABLE);
-            startActivityForResult(enableBtIntent, REQUEST_ENABLE_BT);
-        }
-
+        // getBluetoothLeScanner/isEnabled 在 Android 12+ 需要运行时权限，延后到扫描。
+        mBluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
     }
 
     /*
@@ -210,7 +195,27 @@ public class MainActivity extends BasActivity implements OnClickListener {
     @Override
     public void onClick(View v)
     {
-        // TODO Auto-generated method stub
+        if (mScanning) {
+            scanLeDevice(false);
+            return;
+        }
+        if (!hasBlePermissions()) {
+            requestBlePermissions();
+            return;
+        }
+        if (mBluetoothAdapter == null) {
+            Toast.makeText(this, "设备不支持蓝牙", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        try {
+            if (!mBluetoothAdapter.isEnabled()) {
+                startActivityForResult(new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE), REQUEST_ENABLE_BT);
+                return;
+            }
+        } catch (SecurityException e) {
+            Toast.makeText(this, "需要蓝牙权限才能扫描", Toast.LENGTH_SHORT).show();
+            return;
+        }
 
         if(!isOpenGPS(this)){
             AlertDialog.Builder builder = new AlertDialog.Builder(MainActivity.this,AlertDialog.THEME_DEVICE_DEFAULT_LIGHT);
@@ -247,55 +252,50 @@ public class MainActivity extends BasActivity implements OnClickListener {
      * @throws
      */
     private void scanLeDevice(final boolean enable) {
-
-        if (mBluetoothAdapter == null){
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)
-                mBluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
-            else {
-                BluetoothManager bluetoothManager = (BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE);
-                mBluetoothAdapter = bluetoothManager.getAdapter();
+        if (!hasBlePermissions()) {
+            resetScanState();
+            if (enable) requestBlePermissions();
+            return;
+        }
+        try {
+            if (mBluetoothAdapter == null) {
+                resetScanState();
+                return;
             }
-        }
-        if (mBluetoothLeScanner == null){
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)
+            if (enable && mBluetoothLeScanner == null) {
                 mBluetoothLeScanner = mBluetoothAdapter.getBluetoothLeScanner();
-        }
-        if (enable) {
-            // Stops scanning after a pre-defined scan period.
-            mHandler.postDelayed(new Runnable()
-            {
-                @Override
-                public void run()
-                {
-                    mScanning = false;
-                    scan_flag = true;
-                    scan_btn.setText("扫描设备");
-                    Log.i("SCAN", "stop.....................");
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)
-                        mBluetoothLeScanner.stopScan(mScanCallback);
-                    else
-                        mBluetoothAdapter.stopLeScan(mLeScanCallback);
-                }
-            }, SCAN_PERIOD);
-            /* 开始扫描蓝牙设备，带mLeScanCallback 回调函数 */
-            Log.i("SCAN", "begin.....................");
-            mScanning = true;
-            scan_flag = false;
-            scan_btn.setText("停止扫描");
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)
+            }
+            if (enable && mBluetoothLeScanner == null) {
+                resetScanState();
+                Toast.makeText(this, "蓝牙未开启或扫描器不可用", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            if (enable) {
                 mBluetoothLeScanner.startScan(mScanCallback);
-            else
-                mBluetoothAdapter.startLeScan(mLeScanCallback);
-        } else {
-            Log.i("Stop", "stoping................");
-            mScanning = false;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP)
-                mBluetoothLeScanner.stopScan(mScanCallback);
-            else
-                mBluetoothAdapter.stopLeScan(mLeScanCallback);
-            scan_flag = true;
+                mScanning = true;
+                scan_flag = false;
+                scan_btn.setText("停止扫描");
+                final int generation = ++scanGeneration;
+                mHandler.postDelayed(new Runnable() {
+                    @Override public void run() {
+                        if (mScanning && generation == scanGeneration) scanLeDevice(false);
+                    }
+                }, SCAN_PERIOD);
+            } else {
+                if (mBluetoothLeScanner != null) mBluetoothLeScanner.stopScan(mScanCallback);
+                resetScanState();
+            }
+        } catch (SecurityException e) {
+            resetScanState();
+            Toast.makeText(this, "蓝牙或位置权限已撤销，请重新授权", Toast.LENGTH_SHORT).show();
         }
+    }
 
+    private void resetScanState() {
+        scanGeneration++;
+        mScanning = false;
+        scan_flag = true;
+        scan_btn.setText("扫描设备");
     }
 
     /**
@@ -318,8 +318,13 @@ public class MainActivity extends BasActivity implements OnClickListener {
                 {
                     // 讲扫描到设备的信息输出到listview的适配器
                     BluetoothMessage bluetoothMessage = new BluetoothMessage(device);
-                    mleDeviceListAdapter.addDevice(bluetoothMessage, rssi);
-                    mleDeviceListAdapter.notifyDataSetChanged();
+                    if (!hasBlePermissions()) return;
+                    try {
+                        mleDeviceListAdapter.addDevice(bluetoothMessage, rssi);
+                        mleDeviceListAdapter.notifyDataSetChanged();
+                    } catch (SecurityException revoked) {
+                        Log.w("BLE", "蓝牙权限已撤销", revoked);
+                    }
                 }
             });
 
@@ -333,7 +338,9 @@ public class MainActivity extends BasActivity implements OnClickListener {
         mScanCallback = new ScanCallback() {
             @Override
             public void onScanResult(int callbackType, final ScanResult result) {
+                if (!hasBlePermissions() || result == null) return;
                 final BluetoothDevice device = result.getDevice();
+                if (device == null) return;
                 final BluetoothMessage bluetoothMessage = new BluetoothMessage(device);
                 if(null != device && null != result.getScanRecord()) {
                     try {
@@ -344,6 +351,8 @@ public class MainActivity extends BasActivity implements OnClickListener {
                         }
                     } catch (UnsupportedEncodingException e) {
                         e.printStackTrace();
+                    } catch (SecurityException revoked) {
+                        return;
                     }
                 }
                 runOnUiThread(new Runnable()
@@ -352,8 +361,13 @@ public class MainActivity extends BasActivity implements OnClickListener {
                     public void run()
                     {
                         /* 讲扫描到设备的信息输出到listview的适配器 */
-                        mleDeviceListAdapter.addDevice(bluetoothMessage, result.getRssi());
-                        mleDeviceListAdapter.notifyDataSetChanged();
+                        if (!hasBlePermissions()) return;
+                        try {
+                            mleDeviceListAdapter.addDevice(bluetoothMessage, result.getRssi());
+                            mleDeviceListAdapter.notifyDataSetChanged();
+                        } catch (SecurityException revoked) {
+                            Log.w("BLE", "蓝牙权限已撤销", revoked);
+                        }
                     }
                 });
 
@@ -366,6 +380,7 @@ public class MainActivity extends BasActivity implements OnClickListener {
                     @Override
                     public void run()
                     {
+                        resetScanState();
                         Toast.makeText(MainActivity.this, "扫描出错:"+errorCode, Toast.LENGTH_SHORT).show();
                     }
                 });
@@ -452,24 +467,45 @@ public class MainActivity extends BasActivity implements OnClickListener {
             TextView rssi = (TextView) view.findViewById(R.id.tv_rssi);
 
             BluetoothMessage bluetoothMessage = mLeDevices.get(i);
-            deviceAddress.setText(bluetoothMessage.getDevice().getAddress());
-            deviceName.setText(bluetoothMessage.getName()!=null?bluetoothMessage.getName():bluetoothMessage.getDevice().getName());
+            try {
+                deviceAddress.setText(bluetoothMessage.getDevice().getAddress());
+                deviceName.setText(bluetoothMessage.getName()!=null?bluetoothMessage.getName():bluetoothMessage.getDevice().getName());
+            } catch (SecurityException revoked) {
+                deviceAddress.setText("蓝牙权限已撤销");
+                deviceName.setText("");
+            }
             rssi.setText("" + rssis.get(i));
 
             return view;
         }
     }
-    /**
-     * 权限申请
-     */
-    private void initPermissions() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission_group.LOCATION)!= PackageManager.PERMISSION_GRANTED){
-            // 获取wifi连接需要定位权限,没有获取权限
-            ActivityCompat.requestPermissions((Activity) this,new String[]{
-                    Manifest.permission.ACCESS_FINE_LOCATION,
-                    Manifest.permission.ACCESS_COARSE_LOCATION,
-                    Manifest.permission.ACCESS_WIFI_STATE,
-            },1);
+    /** Android 12+ 附近设备权限；保留精确位置以免 BLE beacon 被系统过滤。 */
+    private boolean hasBlePermissions() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+                != PackageManager.PERMISSION_GRANTED) return false;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            return ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN)
+                    == PackageManager.PERMISSION_GRANTED
+                    && ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT)
+                    == PackageManager.PERMISSION_GRANTED;
+        }
+        return true;
+    }
+
+    private void requestBlePermissions() {
+        // Android 12+ 申请精确位置时需同时申请粗略位置。
+        String[] permissions = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+                ? new String[]{Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT,
+                        Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION}
+                : new String[]{Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION};
+        ActivityCompat.requestPermissions(this, permissions, REQUEST_BLE_PERMISSIONS);
+    }
+
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+        if (requestCode == REQUEST_BLE_PERMISSIONS) {
+            Toast.makeText(this, hasBlePermissions() ? "权限已授予，请再次点击扫描设备"
+                    : "扫描需要附近设备和精确位置权限；体能训练不受影响", Toast.LENGTH_LONG).show();
         }
     }
 

@@ -132,7 +132,7 @@ public final class SessionStore {
         writeIndex(context, session.getUserId(), all);
     }
 
-    /** 删除一条记录，同时删除它的骨架文件、视频与缩略图。 */
+    /** 删除一条记录，同时删除骨架、逐帧结果、视频与缩略图。 */
     public static synchronized void delete(Context context, Session session) {
         List<Session> all = loadAll(context, session.getUserId());
         List<Session> remain = new ArrayList<>();
@@ -143,6 +143,7 @@ public final class SessionStore {
         }
         writeIndex(context, session.getUserId(), remain);
         deleteQuietly(resolveMedia(context, session.getUserId(), session.getPoseFile()));
+        deleteQuietly(resolveMedia(context, session.getUserId(), session.getTimelineFile()));
         deleteQuietly(resolveMedia(context, session.getUserId(), session.getVideoFile()));
         deleteQuietly(resolveMedia(context, session.getUserId(), session.getThumbFile()));
     }
@@ -203,6 +204,8 @@ public final class SessionStore {
             }
             o.put("wallContact", s.isWallContact());
             o.put("poseFile", s.getPoseFile());
+            o.put("algorithmVersion", s.getAlgorithmVersion());
+            o.put("timelineFile", s.getTimelineFile());
             o.put("videoFile", s.getVideoFile());
             o.put("thumbFile", s.getThumbFile());
             o.put("note", s.getNote());
@@ -245,6 +248,8 @@ public final class SessionStore {
             s.setTotalHoldMs(o.optLong("totalHoldMs", -1));
             s.setWallContact(o.optBoolean("wallContact", false));
             s.setPoseFile(o.optString("poseFile", null));
+            s.setAlgorithmVersion(o.optString("algorithmVersion", null));
+            s.setTimelineFile(o.optString("timelineFile", null));
             s.setVideoFile(o.optString("videoFile", null));
             s.setThumbFile(o.optString("thumbFile", null));
             s.setNote(o.optString("note", ""));

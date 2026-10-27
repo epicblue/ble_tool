@@ -125,33 +125,13 @@ public class ExerciseListActivity extends Activity {
     }
 
     private void startTraining(ExerciseType type, String variant) {
-        startTraining(type, variant, false);
-    }
-
-    private void startTraining(ExerciseType type, String variant, boolean squatStreamMode) {
         Intent intent = new Intent(this, TrainingActivity.class);
         intent.putExtra(TrainingActivity.EXTRA_EXERCISE, type.getKey());
         intent.putExtra(TrainingActivity.EXTRA_VARIANT, variant);
-        intent.putExtra(TrainingActivity.EXTRA_SQUAT_STREAM_MODE, squatStreamMode);
         startActivity(intent);
     }
 
     private void onExerciseClicked(final ExerciseType type) {
-        if (type == ExerciseType.SQUAT) {
-            // 在进入训练页前决定检测模式，避免训练中重建检测器影响在途帧或录像。
-            new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_DARK)
-                    .setTitle("深蹲识别方式")
-                    .setItems(new String[]{"逐帧重新找人（建议，可能较慢）",
-                                    "连续跟踪（较快，横移可能跟错）"},
-                            new DialogInterface.OnClickListener() {
-                                @Override public void onClick(DialogInterface dialog, int which) {
-                                    startTraining(type, "", which == 1);
-                                }
-                            })
-                    .setNegativeButton("取消", null)
-                    .show();
-            return;
-        }
         if (type == ExerciseType.CHAIR_PUSHUP) {
             new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_DARK)
                     .setTitle("折凳俯卧撑 · 选择姿势")

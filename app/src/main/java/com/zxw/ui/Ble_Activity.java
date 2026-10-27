@@ -16,6 +16,7 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.ServiceConnection;
 import android.os.Bundle;
+import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Message;
@@ -53,6 +54,7 @@ public class Ble_Activity extends BasActivity implements OnClickListener {
     public static String EXTRAS_DEVICE_RSSI = "RSSI";
     //蓝牙连接状态
     private boolean mConnected = false;
+    private boolean receiverRegistered;
     private String status = "disconnected";
     //蓝牙名字
     private String mDeviceName;
@@ -128,7 +130,10 @@ public class Ble_Activity extends BasActivity implements OnClickListener {
     {
         super.onDestroy();
         //解除广播接收器
-        unregisterReceiver(mGattUpdateReceiver);
+        if (receiverRegistered) {
+            unregisterReceiver(mGattUpdateReceiver);
+            receiverRegistered = false;
+        }
         mBluetoothLeService = null;
     }
 
@@ -138,7 +143,14 @@ public class Ble_Activity extends BasActivity implements OnClickListener {
     {
         super.onResume();
         //绑定广播接收器
-        registerReceiver(mGattUpdateReceiver, makeGattUpdateIntentFilter());
+        if (!receiverRegistered) {
+            if (Build.VERSION.SDK_INT >= 33) {
+                registerReceiver(mGattUpdateReceiver, makeGattUpdateIntentFilter(), Context.RECEIVER_NOT_EXPORTED);
+            } else {
+                registerReceiver(mGattUpdateReceiver, makeGattUpdateIntentFilter());
+            }
+            receiverRegistered = true;
+        }
         if (mBluetoothLeService != null)
         {
             //根据蓝牙地址，建立连接

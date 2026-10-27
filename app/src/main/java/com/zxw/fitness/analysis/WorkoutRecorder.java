@@ -4,6 +4,7 @@ import android.content.Context;
 import android.os.SystemClock;
 
 import com.zxw.fitness.data.PoseLogWriter;
+import com.zxw.fitness.data.RecordedTimeline.Writer;
 import com.zxw.fitness.data.SessionStore;
 import com.zxw.fitness.data.UserStore;
 import com.zxw.fitness.model.ExerciseType;
@@ -22,7 +23,7 @@ import java.io.IOException;
  * <ol>
  *     <li>用 {@link PoseSmoother} 对相机帧做滤波（抗抖动、短暂丢失保持、跳变剔除），
  *     再把结果交给具体判定器；</li>
- *     <li>把滤波后的每个判定帧写入骨架文件，回放时重放同一套数据；</li>
+ *     <li>把滤波帧和判定快照分别写入文件，同版回放可直接复用；</li>
  *     <li>训练结束时把统计结果填进 {@link Session}。</li>
  * </ol>
  */
@@ -50,6 +51,8 @@ public class WorkoutRecorder implements ExerciseAnalyzer, RepListener, HoldListe
     private final FrameGapGuard gapGuard = new FrameGapGuard();
 
     private PoseLogWriter writer;
+    private Writer timelineWriter;
+    private File timelineFile;
     private PoseFrame lastRawFrame;
     private long lastFrameReceivedAt = -1;
     private boolean lastFrameRecorded;
@@ -63,9 +66,10 @@ public class WorkoutRecorder implements ExerciseAnalyzer, RepListener, HoldListe
         this.session = session;
         this.recordPose = recordPose;
         this.listener = listener;
+        session.setAlgorithmVersion(AlgorithmVersion.CURRENT);
+        session.setTimelineFile(null);
         ExerciseType type = session.getExerciseType();
-        // 深蹲允许多关键点一致横移后整体恢复；其余动作仍沿用原有逐点策略。
-        smoother = new PoseSmoother(type == ExerciseType.SQUAT);
+        smoother = new PoseSmoother();
         if (type.isTimerExercise()) {
             HoldAnalyzer analyzer = createHoldAnalyzer(type);
             holdAnalyzer = analyzer;
@@ -130,6 +134,10 @@ public class WorkoutRecorder implements ExerciseAnalyzer, RepListener, HoldListe
             if (!lastFrameRecorded) poseLogComplete = false;
         }
         gapGuard.process(delegate, filtered);
+        if (lastFrameRecorded && timelineWriter != null) {
+            timelineWriter.addFrame(filtered, ReplayTimeline.capture(session.getExerciseType(),
+                    repAnalyzer, holdAnalyzer));
+        }
     }
 
     /**
@@ -149,8 +157,18 @@ public class WorkoutRecorder implements ExerciseAnalyzer, RepListener, HoldListe
             try {
                 writer = new PoseLogWriter(file, width, height);
                 session.setPoseFile(file.getName());
+                timelineFile = SessionStore.resolveMedia(context, session.getUserId(),
+                        SessionStore.mediaPrefix(session.getId()) + "_timeline.dat");
+                try {
+                    timelineWriter = new Writer(timelineFile, session);
+                } catch (IOException | RuntimeException error) {
+                    // 即使逐帧结果缓存不可写，原有骨架与实时计数仍继续工作。
+                    timelineWriter = null;
+                    if (timelineFile != null) timelineFile.delete();
+                }
             } catch (IOException e) {
                 writer = null;
+                if (file != null) file.delete();
                 return;
             }
         }
@@ -191,6 +209,10 @@ public class WorkoutRecorder implements ExerciseAnalyzer, RepListener, HoldListe
             session.addCalibrationChange(frameCount - 1, calibration);
         }
         analyzer.applyCalibrationEvent(calibration);
+        if (recordPose && timelineWriter != null && frameCount > 0) {
+            timelineWriter.addCalibration(ReplayTimeline.capture(session.getExerciseType(),
+                    repAnalyzer, holdAnalyzer));
+        }
         return null;
     }
 
@@ -233,6 +255,16 @@ public class WorkoutRecorder implements ExerciseAnalyzer, RepListener, HoldListe
                         ? ((HandstandTimer) holdAnalyzer).getWallRatio() : 0f;
                 session.setWallContact(wallRatio >= 0.5f);
             }
+        }
+        if (timelineWriter != null) {
+            File pose = SessionStore.resolveMedia(context, session.getUserId(), session.getPoseFile());
+            if (hasRecordedPose() && timelineWriter.finish(pose, session, frameCount)) {
+                session.setTimelineFile(timelineFile.getName());
+            } else {
+                timelineWriter.discard();
+                session.setTimelineFile(null);
+            }
+            timelineWriter = null;
         }
         if (!hasRecordedPose()) {
             File failedPose = SessionStore.resolveMedia(context, session.getUserId(), session.getPoseFile());

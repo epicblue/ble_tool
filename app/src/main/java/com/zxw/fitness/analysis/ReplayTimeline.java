@@ -12,10 +12,8 @@ import java.util.Comparator;
 import java.util.List;
 
 /**
- * 回放时间轴：把录制或视频重识别后的关键点喂给判定器，预先算出每一帧对应的计数/计时与提示，
- * 回放拖动进度条时可以直接取值，无需重新计算。
- *
- * <p>与实时训练共用同一套判定器，算法升级后旧记录的回放成绩可能不同。</p>
+ * 回放时间轴：同版完整记录可从逐帧快照直接构建；旧记录或视频重识别可运行当前判定器。
+ * 拖动进度条时直接取值。算法升级后的重算成绩可能不同于原始历史成绩。
  */
 public class ReplayTimeline {
 
@@ -38,6 +36,66 @@ public class ReplayTimeline {
         this.badReps = badReps;
         this.holdMs = holdMs;
         this.durationMs = durationMs;
+    }
+
+    /** 一帧训练结束后保存的展示状态；组中个人校准会覆盖最近一帧的状态。 */
+    public static final class FrameState {
+        public final float score, progress;
+        public final String status;
+        public final int good, bad;
+        public final long holdMs;
+
+        public FrameState(float score, float progress, String status, int good, int bad, long holdMs) {
+            this.score = score;
+            this.progress = progress;
+            this.status = status == null ? "" : status;
+            this.good = good;
+            this.bad = bad;
+            this.holdMs = holdMs;
+        }
+    }
+
+    public static FrameState capture(ExerciseType type, RepAnalyzer rep, HoldAnalyzer hold) {
+        if (rep != null) {
+            int good = rep.getGoodReps();
+            int bad = rep.getBadReps();
+            return new FrameState(type == ExerciseType.BAD_PUSHUP ? bad : good,
+                    rep.getDepthProgress(), rep.getStatusText(), good, bad, 0);
+        }
+        if (hold != null) {
+            long displayed = HoldScore.displayMs(type, hold);
+            return new FrameState(displayed / 1000f, Math.min(1f, hold.getCurrentHoldMs() / 60000f),
+                    hold.getStatusText(), 0, 0, displayed);
+        }
+        throw new IllegalArgumentException("缺少动作判定器");
+    }
+
+    /** 只整理已经保存的逐帧结果，不创建或运行动作判定器。调用方须先验证完整性。 */
+    public static ReplayTimeline fromRecorded(List<PoseFrame> frames, List<FrameState> states) {
+        if (frames == null || states == null || frames.size() != states.size()) {
+            throw new IllegalArgumentException("骨架和逐帧结果不匹配");
+        }
+        int size = frames.size();
+        long[] times = new long[size];
+        float[] score = new float[size];
+        float[] progress = new float[size];
+        String[] status = new String[size];
+        int[] good = new int[size];
+        int[] bad = new int[size];
+        long[] hold = new long[size];
+        long duration = 0;
+        for (int i = 0; i < size; i++) {
+            FrameState state = states.get(i);
+            times[i] = frames.get(i).getTimestampMs();
+            duration = Math.max(duration, times[i]);
+            score[i] = state.score;
+            progress[i] = state.progress;
+            status[i] = state.status;
+            good[i] = state.good;
+            bad[i] = state.bad;
+            hold[i] = state.holdMs;
+        }
+        return new ReplayTimeline(times, score, progress, status, good, bad, hold, duration);
     }
 
     public static ReplayTimeline build(List<PoseFrame> frames, ExerciseType type, String variant) {

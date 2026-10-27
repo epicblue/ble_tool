@@ -20,11 +20,13 @@ import androidx.core.content.ContextCompat;
 
 import com.zxw.R;
 import com.zxw.fitness.analysis.HoldScore;
+import com.zxw.fitness.analysis.AlgorithmVersion;
 import com.zxw.fitness.analysis.ReplayTimeline;
 import com.zxw.fitness.analysis.VideoPoseReanalysis;
 import com.zxw.fitness.camera.SkeletonOverlay;
 import com.zxw.fitness.camera.VideoPoseReanalyzer;
 import com.zxw.fitness.data.PoseLog;
+import com.zxw.fitness.data.RecordedTimeline;
 import com.zxw.fitness.data.SessionStore;
 import com.zxw.fitness.data.VideoExporter;
 import com.zxw.fitness.model.ExerciseType;
@@ -42,8 +44,8 @@ import java.util.Locale;
 /**
  * 回放页：同时支持"视频回放（叠加骨架）"和"纯骨架动画回放"。
  *
- * <p>有视频时默认重新抽帧识别；无视频时回放录制骨架。两者都按当前判定器计算，
- * 重识别结果仅驻留内存，与录像和保存的历史成绩分开。</p>
+ * <p>同版本且缓存完整时直接播放录制的逐帧结果；旧版或不完整时回退至重算。
+ * 可主动重新识别视频，重识别结果仅驻留内存，不改写历史成绩。</p>
  */
 public class ReplayActivity extends Activity implements VideoExporter.Listener {
 
@@ -89,6 +91,7 @@ public class ReplayActivity extends Activity implements VideoExporter.Listener {
     private PoseLog poseLog;
     private ReplayTimeline timeline;
     private ReplayTimeline recordedTimeline;
+    private boolean reusedRecordedResults;
     private VideoPoseReanalyzer videoReanalyzer;
     private VideoPoseReanalysis videoAnalysis;
     private File currentVideo;
@@ -282,10 +285,14 @@ public class ReplayActivity extends Activity implements VideoExporter.Listener {
         overlay.setFrame(null);
         tvSceneDiagnosis.setText("没有可用的骨架记录");
 
-        poseLog = PoseLog.load(SessionStore.resolveMedia(this, session.getUserId(),
-                session.getPoseFile()));
-        recordedTimeline = poseLog != null && !poseLog.isEmpty()
-                ? ReplayTimeline.build(poseLog.getFrames(), session) : null;
+        File poseFile = SessionStore.resolveMedia(this, session.getUserId(), session.getPoseFile());
+        poseLog = PoseLog.load(poseFile);
+        File cachedFile = SessionStore.resolveMedia(this, session.getUserId(), session.getTimelineFile());
+        recordedTimeline = RecordedTimeline.load(cachedFile, poseFile, poseLog, session);
+        reusedRecordedResults = recordedTimeline != null;
+        if (recordedTimeline == null && poseLog != null && !poseLog.isEmpty()) {
+            recordedTimeline = ReplayTimeline.build(poseLog.getFrames(), session);
+        }
         timeline = recordedTimeline;
         overlay.setPixelCoordinates(poseLog != null && poseLog.isLegacyPixelCoordinates());
 
@@ -368,7 +375,8 @@ public class ReplayActivity extends Activity implements VideoExporter.Listener {
                     return true;
                 }
             });
-            beginVideoReanalysis();
+            if (!reusedRecordedResults) beginVideoReanalysis();
+            else updatePoseControls();
             videoView.setVideoPath(currentVideo.getAbsolutePath());
             videoView.requestFocus();
         } else {
@@ -386,7 +394,7 @@ public class ReplayActivity extends Activity implements VideoExporter.Listener {
         handler.post(tick);
     }
 
-    /** 每次进入有视频的记录，默认从原 MP4 重新识别；不修改任何存档。 */
+    /** 旧记录/缓存缺失自动重识别；同版本缓存可用时仅在用户主动点击后运行。 */
     private void beginVideoReanalysis() {
         if (!hasVideo || currentVideo == null || analyzingVideo) return;
         if (videoReady) {
@@ -508,7 +516,8 @@ public class ReplayActivity extends Activity implements VideoExporter.Listener {
         }
         tvRecordedSummary.setVisibility(View.VISIBLE);
         tvRecordedSummary.setText("历史保存：" + session.getResultSummary()
-                + (timeline != null ? " · 大字为回放重算" : ""));
+                + (timeline == null ? "" : poseMode == MODE_RECORDED && reusedRecordedResults
+                ? " · 大字为录制结果" : " · 大字为回放重算"));
     }
 
     private void updatePoseControls() {
@@ -522,33 +531,41 @@ public class ReplayActivity extends Activity implements VideoExporter.Listener {
             btnPoseMode.setText("仅录制骨架");
             btnPoseMode.setEnabled(false);
             btnPoseMode.setAlpha(0.55f);
-            String detail = recordedTimeline != null ? "显示录制骨架，按当前判定器重算"
-                    : "没有录制骨架，仅显示保存的成绩";
+            String detail = recordedTimeline == null ? "没有录制骨架，仅显示保存的成绩"
+                    : reusedRecordedResults ? "复用录制逐帧结果，未重新计算" : "录制骨架按当前判定器重算";
             tvReplayInfo.setText((fallbackReason.isEmpty() ? "纯骨架回放" : fallbackReason)
-                    + " · " + detail);
+                    + " · " + detail + "\n" + versionLabel());
             return;
         }
         btnPoseMode.setEnabled(true);
         btnPoseMode.setAlpha(1f);
         if (videoAnalysis == null) {
             btnPoseMode.setText("重新识别");
-            String detail = recordedTimeline != null ? "录制骨架" : "没有录制骨架";
+            String detail = recordedTimeline == null ? "没有录制骨架"
+                    : reusedRecordedResults ? "已复用录制逐帧结果，未重新计算" : "录制骨架已按当前判定器重算";
             tvReplayInfo.setText((fallbackReason.isEmpty() ? detail : fallbackReason + " · " + detail)
-                    + " · 当前不是视频重识别结果，点击“重新识别”可重试");
+                    + " · 可点击“重新识别”比较\n" + versionLabel());
         } else if (poseMode == MODE_RECORDED) {
             btnPoseMode.setText("骨架：录制");
-            tvReplayInfo.setText("录制时的滤波骨架 · 按当前判定器重算；点击切换新识别");
+            tvReplayInfo.setText((reusedRecordedResults ? "录制骨架与逐帧结果（未重算）"
+                    : "录制骨架按当前判定器重算") + " · 点击切换新识别\n" + versionLabel());
         } else {
             btnPoseMode.setText(poseMode == MODE_NEW_RAW ? "骨架：新原始" : "骨架：新滤波");
-            String mode = session.getExerciseType() == ExerciseType.SQUAT ? "逐帧找人" : "连续跟踪";
+            String mode = "连续跟踪";
             String sparse = videoAnalysis.getIntervalMs() > 100 ? " · 较稀采样可能漏动作" : "";
             String missing = videoAnalysis.getMissingFrames() > 0
                     ? " · " + videoAnalysis.getMissingFrames() + " 帧未解码" : "";
             tvReplayInfo.setText("视频新识别（" + mode + "，每 " + videoAnalysis.getIntervalMs()
                     + "ms）" + sparse + missing
-                    + " · 仅临时回放；无重力补偿/组中校准，计数供参考");
+                    + " · 仅临时回放；无重力补偿/组中校准，计数供参考\n" + versionLabel());
         }
         btnPoseMode.setContentDescription(btnPoseMode.getText() + "，点击切换或重新识别");
+    }
+
+    private String versionLabel() {
+        String recorded = session.getAlgorithmVersion();
+        return "算法：录制 " + (recorded == null || recorded.isEmpty() ? "旧记录未记录" : recorded)
+                + " / 当前 " + AlgorithmVersion.CURRENT;
     }
 
     private final Runnable tick = new Runnable() {

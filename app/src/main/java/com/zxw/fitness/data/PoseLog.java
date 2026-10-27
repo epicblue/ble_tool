@@ -85,12 +85,12 @@ public class PoseLog {
             float[] compact = new float[PoseFrame.LANDMARK_SUBSET.length * 4];
             long last = 0;
             while (true) {
-                int offset;
-                try {
-                    offset = in.readInt();
-                } catch (IOException eof) {
-                    break;
-                }
+                // 仅在完整帧边界允许 EOF；末尾残缺的 1–3 字节不是有效结束。
+                int first = in.read();
+                if (first < 0) break;
+                int offset = (first << 24) | (in.readUnsignedByte() << 16)
+                        | (in.readUnsignedByte() << 8) | in.readUnsignedByte();
+                if (offset < 0 || (!frames.isEmpty() && offset < last)) return null;
                 boolean visible = in.readByte() != 0;
                 float roll = version >= 2 ? Float.intBitsToFloat(in.readInt()) : 0f;
                 for (int i = 0; i < compact.length; i++) {

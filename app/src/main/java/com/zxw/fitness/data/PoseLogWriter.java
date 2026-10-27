@@ -21,6 +21,7 @@ public class PoseLogWriter {
 
     private OutputStream out;
     private long startTimeMs = -1;
+    private long previousTimeMs = -1;
     private int frameCount;
     private boolean closed;
     private boolean failed;
@@ -47,10 +48,14 @@ public class PoseLogWriter {
             return;
         }
         try {
-            if (startTimeMs < 0) {
-                startTimeMs = frame.getTimestampMs();
+            long now = frame.getTimestampMs();
+            if (now < 0 || (previousTimeMs >= 0 && now < previousTimeMs)) {
+                throw new IOException("骨架时间回退");
             }
-            int offset = (int) Math.max(0, frame.getTimestampMs() - startTimeMs);
+            if (startTimeMs < 0) startTimeMs = now;
+            long delta = now - startTimeMs;
+            if (delta < 0 || delta > Integer.MAX_VALUE) throw new IOException("骨架时间超出范围");
+            int offset = (int) delta;
             writeInt(offset);
             out.write(frame.isVisible() ? 1 : 0);
             writeInt(Float.floatToIntBits(rollDegrees));
@@ -58,6 +63,7 @@ public class PoseLogWriter {
             for (float value : compact) {
                 writeInt(Float.floatToIntBits(value));
             }
+            previousTimeMs = now;
             frameCount++;
         } catch (IOException e) {
             failed = true;

@@ -33,6 +33,7 @@ import com.google.mlkit.vision.pose.Pose;
 import com.google.mlkit.vision.pose.PoseDetector;
 import com.zxw.fitness.model.PoseFrame;
 import com.zxw.fitness.pose.GravityAlign;
+import com.zxw.fitness.pose.FrozenPoseRecovery;
 
 import java.io.File;
 import java.util.concurrent.ExecutorService;
@@ -61,6 +62,9 @@ public class CameraController {
         void onPose(@NonNull PoseFrame frame, @NonNull PoseFrame displayFrame,
                     int uprightWidth, int uprightHeight, float rollDegrees);
 
+        /** 仅在可疑冻结时尝试重新找人；false 表示候选不完整或未改善。 */
+        default void onPoseRecovery(boolean accepted) { }
+
         void onCameraError(@NonNull String message);
 
         void onRecordingSaved(@NonNull File file, long durationMs);
@@ -72,15 +76,17 @@ public class CameraController {
     private final LifecycleOwner lifecycleOwner;
     private final PreviewView previewView;
     private final Listener listener;
-    /** 深蹲相机横移时逐帧重新检测人物，不复用连续跟踪的人体位置。 */
-    private final boolean detectPersonEveryFrame;
+    /** 只为深蹲启用严格的冻结检测；平时仍使用连续跟踪。 */
+    private final boolean recoverFrozenPose;
+    private final FrozenPoseRecovery recovery = new FrozenPoseRecovery();
 
     private final ExecutorService analysisExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService videoExecutor = Executors.newSingleThreadExecutor();
     /** 录像回调发生在后台线程，统一切回主线程再通知界面。 */
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
-    private PoseDetector poseDetector;
+    private volatile DetectorSlot detectorSlot;
+    private long cameraGeneration;
     private ProcessCameraProvider cameraProvider;
     private ImageAnalysis imageAnalysis;
     private VideoCapture<Recorder> videoCapture;
@@ -125,12 +131,12 @@ public class CameraController {
     }
 
     public CameraController(Context context, LifecycleOwner owner, PreviewView previewView,
-                            Listener listener, boolean detectPersonEveryFrame) {
+                            Listener listener, boolean recoverFrozenPose) {
         this.context = context.getApplicationContext();
         this.lifecycleOwner = owner;
         this.previewView = previewView;
         this.listener = listener;
-        this.detectPersonEveryFrame = detectPersonEveryFrame;
+        this.recoverFrozenPose = recoverFrozenPose;
     }
 
     public boolean isFrontCamera() {
@@ -161,12 +167,14 @@ public class CameraController {
             return;
         }
         started = true;
+        final long generation = ++cameraGeneration;
         startGravitySensor();
         final ListenableFuture<ProcessCameraProvider> future =
                 ProcessCameraProvider.getInstance(context);
         future.addListener(new Runnable() {
             @Override
             public void run() {
+                if (!started || generation != cameraGeneration) return;
                 try {
                     bindUseCases(future.get());
                 } catch (Exception e) {
@@ -197,8 +205,8 @@ public class CameraController {
         cameraProvider = provider;
         provider.unbindAll();
 
-        if (poseDetector == null) {
-            poseDetector = createPoseDetector();
+        if (detectorSlot == null) {
+            detectorSlot = new DetectorSlot(createPoseDetector());
         }
 
         CameraSelector selector = new CameraSelector.Builder()
@@ -243,9 +251,8 @@ public class CameraController {
     }
 
     private PoseDetector createPoseDetector() {
-        // 深蹲使用逐帧人物检测，不沿用可能已偏移的 STREAM 跟踪区域；
-        // 代价是更多推理开销，实际帧率与恢复效果仍须真机验证。
-        return PoseDetectorFactory.create(detectPersonEveryFrame);
+        // 所有动作均恢复为连续跟踪；新的 STREAM 检测器首次处理时会重新找人。
+        return PoseDetectorFactory.create(false);
     }
 
     /** 开始录像，返回 false 表示当前设备不支持录制或未就绪。 */
@@ -322,6 +329,7 @@ public class CameraController {
     /** 释放相机与识别器。 */
     public void stop() {
         started = false;
+        cameraGeneration++;
         stopRecording();
         stopGravitySensor();
         release();
@@ -370,7 +378,40 @@ public class CameraController {
         videoExecutor.shutdownNow();
     }
 
+    /** 在途任务持有租约，切镜头/离开页面时不能提前关闭正在用图像的检测器。 */
+    private static final class DetectorSlot {
+        final PoseDetector detector;
+        private int users;
+        private boolean retired;
+        DetectorSlot(PoseDetector detector) { this.detector = detector; }
+        synchronized boolean acquire() {
+            if (retired) return false;
+            users++;
+            return true;
+        }
+        synchronized void release() {
+            users--;
+            if (retired && users == 0) closeDetector();
+        }
+        synchronized void retire() {
+            if (retired) return;
+            retired = true;
+            if (users == 0) closeDetector();
+        }
+        private void closeDetector() {
+            try { detector.close(); } catch (RuntimeException e) { Log.w(TAG, "关闭姿态检测器失败", e); }
+        }
+    }
+
     private void release() {
+        if (imageAnalysis != null) {
+            imageAnalysis.clearAnalyzer();
+            imageAnalysis = null;
+        }
+        DetectorSlot slot = detectorSlot;
+        detectorSlot = null;
+        if (slot != null) slot.retire();
+        recovery.reset();
         if (cameraProvider != null) {
             try {
                 cameraProvider.unbindAll();
@@ -378,70 +419,158 @@ public class CameraController {
                 // ignore
             }
         }
-        if (imageAnalysis != null) {
-            imageAnalysis.clearAnalyzer();
-            imageAnalysis = null;
-        }
-        if (poseDetector != null) {
-            poseDetector.close();
-            poseDetector = null;
+    }
+
+    /** 根据原始画面输出重力对齐帧；诊断仍显示原始结果。主线程调用。 */
+    private void deliver(PoseFrame displayFrame, int width, int height) {
+        PoseFrame boundedFrame = displayFrame.maskOutOfFrame(width, height);
+        float roll = rollDegrees;
+        PoseFrame frame = Math.abs(roll) < GravityAlign.DEAD_ZONE_DEG
+                ? boundedFrame : GravityAlign.rotate(boundedFrame, roll,
+                0.5f, height / (2f * Math.max(1, width)));
+        uprightWidth = width;
+        uprightHeight = height;
+        if (listener != null) listener.onPose(frame, displayFrame, width, height, roll);
+    }
+
+    private boolean isCurrent(DetectorSlot slot) {
+        return started && detectorSlot == slot;
+    }
+
+    /** 同一帧无论在哪个异步分支结束，都只释放一次图像与检测器租约。 */
+    private static final class FrameLease {
+        final DetectorSlot slot;
+        final ImageProxy image;
+        private boolean finished;
+        FrameLease(DetectorSlot slot, ImageProxy image) { this.slot = slot; this.image = image; }
+        synchronized void finish() {
+            if (finished) return;
+            finished = true;
+            try { slot.release(); } finally { image.close(); }
         }
     }
 
-    /** ImageAnalysis 分析器：把图像送入 ML Kit 并转换关键点。 */
+    private void notifyRecovery(boolean accepted) {
+        if (listener == null) return;
+        try { listener.onPoseRecovery(accepted); }
+        catch (RuntimeException e) { Log.w(TAG, "无法显示重新定位提示", e); }
+    }
+
+    /** ImageAnalysis 分析器：普通帧只调用一次 STREAM；异常时才试用新的 STREAM。 */
     private class PoseAnalyzerImpl implements ImageAnalysis.Analyzer {
-        @Override
-        public void analyze(@NonNull ImageProxy imageProxy) {
-            final PoseDetector detector = poseDetector;
-            if (detector == null) {
+        @Override public void analyze(@NonNull final ImageProxy imageProxy) {
+            final DetectorSlot slot = detectorSlot;
+            if (slot == null || !slot.acquire()) {
                 imageProxy.close();
                 return;
             }
-            final int rotation = imageProxy.getImageInfo().getRotationDegrees();
-            final long timestampMs = imageProxy.getImageInfo().getTimestamp() / 1000000L;
-            final int imageWidth = imageProxy.getWidth();
-            final int imageHeight = imageProxy.getHeight();
-            InputImage inputImage;
+            final FrameLease lease = new FrameLease(slot, imageProxy);
             try {
-                inputImage = InputImage.fromMediaImage(imageProxy.getImage(), rotation);
-            } catch (Exception e) {
-                imageProxy.close();
-                return;
+                final int rotation = imageProxy.getImageInfo().getRotationDegrees();
+                final long timestampMs = imageProxy.getImageInfo().getTimestamp() / 1000000L;
+                final int imageWidth = imageProxy.getWidth();
+                final int imageHeight = imageProxy.getHeight();
+                final int width = rotation % 180 == 0 ? imageWidth : imageHeight;
+                final int height = rotation % 180 == 0 ? imageHeight : imageWidth;
+                final InputImage input = InputImage.fromMediaImage(imageProxy.getImage(), rotation);
+                slot.detector.process(input).addOnCompleteListener(
+                        new com.google.android.gms.tasks.OnCompleteListener<Pose>() {
+                    @Override public void onComplete(@NonNull com.google.android.gms.tasks.Task<Pose> task) {
+                        boolean retryStarted = false;
+                        try {
+                            if (!isCurrent(slot)) return;
+                            if (!task.isSuccessful()) {
+                                // 检测失败不能跨这帧累积“持续冻结”的证据。
+                                recovery.observe(null, width, height);
+                                Log.w(TAG, "姿态识别失败", task.getException());
+                                return;
+                            }
+                            PoseFrame original = PoseFrameConverter.fromMlKit(task.getResult(), timestampMs, width);
+                            if (recoverFrozenPose && recovery.observe(original, width, height)) {
+                                retryStarted = true;
+                                retryWithFreshStream(lease, input, original, width, height);
+                            } else {
+                                deliver(original, width, height);
+                            }
+                        } catch (RuntimeException e) {
+                            recovery.observe(null, width, height);
+                            Log.w(TAG, "处理姿态识别结果失败", e);
+                        } finally {
+                            if (!retryStarted) lease.finish();
+                        }
+                    }
+                });
+            } catch (RuntimeException e) {
+                Log.w(TAG, "无法提交姿态识别", e);
+                mainHandler.post(new Runnable() {
+                    @Override public void run() {
+                        if (isCurrent(slot)) recovery.observe(null, 0, 0);
+                    }
+                });
+                lease.finish();
             }
-            detector.process(inputImage)
-                    .addOnSuccessListener(new com.google.android.gms.tasks.OnSuccessListener<Pose>() {
-                        @Override
-                        public void onSuccess(Pose pose) {
-                            int w = rotation % 180 == 0 ? imageWidth : imageHeight;
-                            int h = rotation % 180 == 0 ? imageHeight : imageWidth;
-                            // ML Kit 返回像素；x/y 同除以画面宽，既便于显示又保留真实角度。
-                            PoseFrame displayFrame = PoseFrameConverter.fromMlKit(pose, timestampMs, w);
-                            // 画面外的推测点仅供诊断，不用于训练判定或个人校准。
-                            PoseFrame boundedFrame = displayFrame.maskOutOfFrame(w, h);
-                            float roll = rollDegrees;
-                            PoseFrame frame = Math.abs(roll) < GravityAlign.DEAD_ZONE_DEG
-                                    ? boundedFrame : GravityAlign.rotate(boundedFrame, roll,
-                                    0.5f, h / (2f * Math.max(1, w)));
-                            uprightWidth = w;
-                            uprightHeight = h;
-                            if (listener != null) {
-                                listener.onPose(frame, displayFrame, w, h, roll);
+        }
+    }
+
+    /** 保持同一 ImageProxy 有效直到候选完成；失败或只有腿时不替换旧检测器。 */
+    private void retryWithFreshStream(final FrameLease lease, InputImage input,
+                                      final PoseFrame original, final int width, final int height) {
+        final DetectorSlot oldSlot = lease.slot;
+        DetectorSlot created = null;
+        try {
+            created = new DetectorSlot(createPoseDetector());
+            final DetectorSlot candidate = created;
+            candidate.acquire();
+            candidate.detector.process(input).addOnCompleteListener(
+                    new com.google.android.gms.tasks.OnCompleteListener<Pose>() {
+                @Override public void onComplete(@NonNull com.google.android.gms.tasks.Task<Pose> task) {
+                    boolean accepted = false;
+                    PoseFrame result = original;
+                    try {
+                        if (isCurrent(oldSlot) && task.isSuccessful()) {
+                            PoseFrame fresh = PoseFrameConverter.fromMlKit(task.getResult(),
+                                    original.getTimestampMs(), width);
+                            if (recovery.accepts(original, fresh, width, height)) {
+                                detectorSlot = candidate;
+                                oldSlot.retire();
+                                result = fresh;
+                                accepted = true;
                             }
                         }
-                    })
-                    .addOnFailureListener(new com.google.android.gms.tasks.OnFailureListener() {
-                        @Override
-                        public void onFailure(@NonNull Exception e) {
-                            Log.w(TAG, "姿态识别失败", e);
+                    } catch (RuntimeException e) {
+                        Log.w(TAG, "候选姿态不可用，保留原有跟踪", e);
+                    } finally {
+                        if (!accepted) candidate.retire();
+                        candidate.release();
+                    }
+                    try {
+                        if ((accepted && isCurrent(candidate)) || (!accepted && isCurrent(oldSlot))) {
+                            notifyRecovery(accepted);
+                            if (isCurrent(accepted ? candidate : oldSlot)) deliver(result, width, height);
                         }
-                    })
-                    .addOnCompleteListener(new com.google.android.gms.tasks.OnCompleteListener<Pose>() {
-                        @Override
-                        public void onComplete(@NonNull com.google.android.gms.tasks.Task<Pose> task) {
-                            imageProxy.close();
-                        }
-                    });
+                    } catch (RuntimeException e) {
+                        Log.w(TAG, "无法显示重新定位结果", e);
+                    } finally {
+                        lease.finish();
+                    }
+                }
+            });
+        } catch (RuntimeException e) {
+            Log.w(TAG, "重新定位失败，继续原有跟踪", e);
+            if (created != null) {
+                created.retire();
+                created.release();
+            }
+            try {
+                if (isCurrent(oldSlot)) {
+                    notifyRecovery(false);
+                    if (isCurrent(oldSlot)) deliver(original, width, height);
+                }
+            } catch (RuntimeException callbackError) {
+                Log.w(TAG, "无法显示原有跟踪结果", callbackError);
+            } finally {
+                lease.finish();
+            }
         }
     }
-
 }

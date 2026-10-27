@@ -4,6 +4,7 @@ import com.zxw.fitness.model.ExerciseType;
 import com.zxw.fitness.model.PoseFrame;
 import com.zxw.fitness.model.Session;
 import com.zxw.fitness.pose.PoseSmoother;
+import com.zxw.fitness.pose.FrozenPoseRecovery;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -83,14 +84,16 @@ public final class VideoReanalysisRunner {
             long duration = source.durationMs();
             int interval = sampleIntervalMs(duration);
             int total = (int) ((duration - 1) / interval + 1);
-            // 与实时训练的推荐模式一致：深蹲逐帧找人，其余运动连续跟踪。
-            engine = factory.openEngine(session.getExerciseType() == ExerciseType.SQUAT);
+            // 恢复旧的连续跟踪；仅深蹲疑似冻结时尝试一个新的 STREAM。
+            engine = factory.openEngine(false);
             checkCancelled(cancellation);
 
             List<PoseFrame> rawFrames = new ArrayList<>(total);
             List<PoseFrame> filteredFrames = new ArrayList<>(total);
             List<boolean[]> pendingJumps = new ArrayList<>(total);
-            PoseSmoother smoother = new PoseSmoother(session.getExerciseType() == ExerciseType.SQUAT);
+            PoseSmoother smoother = new PoseSmoother();
+            FrozenPoseRecovery recovery = session.getExerciseType() == ExerciseType.SQUAT
+                    ? new FrozenPoseRecovery() : null;
             int sourceWidth = 0;
             int sourceHeight = 0;
             int missing = 0;
@@ -104,6 +107,7 @@ public final class VideoReanalysisRunner {
                 if (image == null) {
                     missing++;
                     raw = PoseFrame.empty(timeMs);
+                    if (recovery != null) recovery.observe(raw, width, height);
                 } else {
                     try {
                         checkCancelled(cancellation);
@@ -123,6 +127,28 @@ public final class VideoReanalysisRunner {
                         raw = engine.detect(image, timeMs);
                         if (raw == null || raw.getTimestampMs() != timeMs) {
                             throw new IOException("视频识别结果时间不匹配");
+                        }
+                        if (recovery != null && recovery.observe(raw, width, height)) {
+                            PoseEngine<T> candidate = null;
+                            try {
+                                checkCancelled(cancellation);
+                                candidate = factory.openEngine(false);
+                                PoseFrame fresh = candidate.detect(image, timeMs);
+                                checkCancelled(cancellation);
+                                if (recovery.accepts(raw, fresh, width, height)) {
+                                    PoseEngine<T> previous = engine;
+                                    engine = candidate;
+                                    candidate = null;
+                                    raw = fresh;
+                                    previous.close();
+                                }
+                            } catch (Cancelled cancelled) {
+                                throw cancelled;
+                            } catch (Exception ignored) {
+                                // 候选不可用时保留原先的跟踪结果，不中断回放。
+                            } finally {
+                                if (candidate != null) candidate.close();
+                            }
                         }
                     } finally {
                         image.close();
