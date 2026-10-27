@@ -1,0 +1,12 @@
+## 复制本文件为 local.properties 后按自己的路径修改（local.properties 已被 .gitignore 忽略，不会提交）。
+##
+## Windows 注意：properties 文件里反斜杠是转义符，两种写法都可以：
+##   1) 标准写法（Android Studio 自动生成的就是这种）：反斜杠要写两次
+##        sdk.dir=E\:\\Android\\Sdk
+##   2) 更省事的写法：直接用正斜杠
+##        sdk.dir=E:/Android/Sdk
+##
+## macOS / Linux 示例：
+##        sdk.dir=/Users/yourname/Library/Android/sdk
+##        sdk.dir=/home/yourname/Android/Sdk
+sdk.dir=E\:\\Android\\Sdk

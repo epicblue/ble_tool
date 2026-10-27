@@ -38,6 +38,8 @@ gradlew.bat :app:assembleDebug        # 编译 APK
 ./gradlew :app:assembleDebug
 ```
 
+- **先配置 SDK 路径**：复制 `local.properties.example` 为 `local.properties`，
+  把 `sdk.dir` 改成自己的 SDK 目录，例如 `sdk.dir=E:/Android/Sdk`
 - **Android Studio Hedgehog (2023.1)+，Gradle JDK 必须是 17 或 21**
   （Settings → Build Tools → Gradle → Gradle JDK → 选 `jbr-17`）
 - AGP 8.7.3、Gradle 8.10.2、compileSdk 34、targetSdk 34、minSdk 21

@@ -159,6 +159,53 @@ gradlew.bat :app:assembleDebug        # 再打 debug 包
 ./gradlew :app:assembleDebug
 ```
 
+### 7.0 配置 Android SDK 路径（`local.properties`）
+
+Gradle 需要知道 SDK 装在哪里。**推荐写在项目根目录的 `local.properties`**（已被 `.gitignore` 忽略，
+只对你这台机器生效，不会提交到仓库）：
+
+```properties
+# 正斜杠最省事，不用管转义
+sdk.dir=E:/Android/Sdk
+
+# 或者用 Windows 原生写法，注意反斜杠在 properties 文件里是转义符，要写两次
+sdk.dir=E:\Android\Sdk
+```
+
+仓库里提供了一份 `local.properties.example`，可以直接复制改名：
+
+```bat
+copy local.properties.example local.properties
+```
+
+其他两种方式（任选其一即可，优先级：`local.properties` > 环境变量 > Studio 设置）：
+
+| 方式 | 做法 |
+| --- | --- |
+| 环境变量 | `set ANDROID_HOME=E:\Android\Sdk`（或 `ANDROID_SDK_ROOT`），重开终端生效 |
+| Android Studio | `File → Settings → Languages & Frameworks → Android SDK` → 设置 *Android SDK Location* |
+
+> 注意：`local.properties` 属于个人环境配置，**不要提交**（不同电脑路径不同，提交了会把别人的配置覆盖掉）。
+> `settings.gradle` 里已加了 SDK 路径自检：找不到路径或目录里没有 `platforms` 时，会打印中文提示，
+> 而不是只报一句 `SDK location not found`。
+
+该目录下至少需要安装（`SDK Manager → SDK Platforms / SDK Tools`）：
+
+- **Android SDK Platform 34**（对应 `compileSdk 34`）
+- **Android SDK Build-Tools 34.0.0**
+- **Android SDK Platform-Tools**（adb，装 APK 用）
+- **Android SDK Command-line Tools**（可选，命令行构建用）
+
+目录结构大致如下（用于自查）：
+
+```
+E:\Android\Sdk\
+├── platforms\android-34\
+├── build-tools\34.0.0\
+├── platform-tools\adb.exe
+└── cmdline-tools\
+```
+
 ### 7.1 测试包与正式版共存（不覆盖已安装的程序）
 
 Android 靠 **applicationId（包名）** 区分应用：包名相同就会被当成同一个 App。

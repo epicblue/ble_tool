@@ -54,3 +54,51 @@ ${hint}
 ================================================================================
 """)
 }
+
+/*
+ * Android SDK 路径自检（只提示，不中断构建）
+ *
+ * 优先级：local.properties 的 sdk.dir > 环境变量 ANDROID_HOME / ANDROID_SDK_ROOT。
+ * 没配置时 Gradle 只会抛 "SDK location not found"，这里提前给出中文说明。
+ */
+gradle.projectsLoaded { gradleInstance ->
+    def currentDir = gradleInstance.startParameter.currentDir
+    String sdkDir = null
+
+    def propsFile = new File(currentDir, 'local.properties')
+    if (propsFile.exists()) {
+        def props = new Properties()
+        propsFile.withInputStream { props.load(it) }
+        def value = props.getProperty('sdk.dir')
+        if (value != null && value.trim().length() > 0) {
+            sdkDir = value.trim()
+        }
+    }
+    if (sdkDir == null || sdkDir.length() == 0) {
+        sdkDir = System.getenv('ANDROID_HOME')
+        if (sdkDir == null || sdkDir.length() == 0) {
+            sdkDir = System.getenv('ANDROID_SDK_ROOT')
+        }
+    }
+
+    def hintPrefix = System.lineSeparator() + '=' * 60 + System.lineSeparator()
+    if (sdkDir == null || sdkDir.length() == 0) {
+        println hintPrefix +
+                '[提示] 没有找到 Android SDK 路径，请任选一种方式配置：' + System.lineSeparator() +
+                '  1) 在项目根目录新建 local.properties（可复制 local.properties.example）：' + System.lineSeparator() +
+                '       sdk.dir=E:/Android/Sdk' + System.lineSeparator() +
+                '     （用反斜杠的话要写成 E:\\Android\\Sdk）' + System.lineSeparator() +
+                '  2) 设置环境变量 ANDROID_HOME=E:\\Android\\Sdk' + System.lineSeparator() +
+                '  3) Android Studio → Settings → Languages & Frameworks → Android SDK → 设置 SDK Location' +
+                System.lineSeparator() + '=' * 60
+    } else {
+        def dir = new File(sdkDir)
+        if (!dir.exists() || !new File(dir, 'platforms').exists()) {
+            println hintPrefix +
+                    '[提示] SDK 路径 ' + sdkDir + ' 不存在或缺少 platforms 目录。' + System.lineSeparator() +
+                    ' 请用 SDK Manager 安装 Android SDK Platform 34 与 Build-Tools 34.0.0，' + System.lineSeparator() +
+                    ' 或修改 local.properties 中的 sdk.dir 指向正确的 SDK 目录。' +
+                    System.lineSeparator() + '=' * 60
+        }
+    }
+}
