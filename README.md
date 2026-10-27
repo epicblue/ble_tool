@@ -34,6 +34,7 @@
 - **账号切换**：多人共用一台手机时，训练数据彼此隔离
 
 功能说明、判定阈值、数据格式与已知限制详见 **[docs/fitness-module.md](docs/fitness-module.md)**；
+判定算法的改进方向与实测证据见 **[docs/algorithm-plan.md](docs/algorithm-plan.md)**；
 后续版本计划见 **[ROADMAP.md](ROADMAP.md)**。
 
 ## 构建

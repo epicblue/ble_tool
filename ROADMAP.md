@@ -23,7 +23,8 @@
 | 构建 | AGP 8.7.3 / Gradle 8.10.2 / JDK 17+ / compileSdk 34 | ✅ |
 | 质量 | 判定逻辑纯 JVM 单测（合成关键点，10 个动作全覆盖） | ⚠️ 仅覆盖分析层 |
 
-已知限制见 [docs/fitness-module.md 第 8 节](docs/fitness-module.md#8-已知限制)。
+已知限制见 [docs/fitness-module.md 第 8 节](docs/fitness-module.md#8-已知限制)；
+判定算法的改进清单（含实测证据、优先级与验收口径）见 **[docs/algorithm-plan.md](docs/algorithm-plan.md)**。
 
 ---
 
@@ -118,6 +119,9 @@
 ## 4. v1.4 · 识别增强（P1/P2）
 
 ### 4.1 判定鲁棒性
+
+> 详细方案与实测数据见 [docs/algorithm-plan.md](docs/algorithm-plan.md)（P0：计时只算有效时间、
+> 重力对齐补偿横滚、透视缩短鲁棒）。
 
 - [x] **正对镜头**支持：用"肩宽/躯干长度"识别视角，正对时改用"手腕下降比例"判深度
 - [x] 姿态丢失的插值/预测（≤350ms 保持关键点、≤500ms 不打断动作）
