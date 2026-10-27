@@ -11,3 +11,7 @@
 /build
 /captures
 .externalNativeBuild
+
+# Python 离线自查脚本的缓存
+__pycache__/
+*.pyc
