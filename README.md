@@ -44,6 +44,10 @@ gradlew.bat :app:assembleDebug        # 编译 APK
 - 需要 SDK Platform 34 + Build-Tools 34.0.0（Studio 会提示自动安装）
 - 依赖：CameraX 1.1.0、ML Kit Pose Detection 18.0.0（离线模型，画面不上传）
 
+> **不会覆盖手机上已安装的正式版**：debug 包的 `applicationId` 是 `com.zxw.dev`
+> （见 `app/build.gradle` 的 `applicationIdSuffix '.dev'`），安装后与正式版并存，
+> 桌面显示为「BLE助手·测试」。只有 `assembleRelease` 生成的包才会替换正式版。
+
 > 遇到 `No matching variant of com.android.tools.build:gradle` 这类报错，基本都是
 > **Gradle 用的 JDK 版本不对**（JDK 8/11 不行，需要 17/21）。
 > 逐步排查见 [docs/fitness-module.md 第 7.1 节](docs/fitness-module.md#71-常见构建错误)。

@@ -159,7 +159,38 @@ gradlew.bat :app:assembleDebug        # 再打 debug 包
 ./gradlew :app:assembleDebug
 ```
 
-### 7.1 常见构建错误
+### 7.1 测试包与正式版共存（不覆盖已安装的程序）
+
+Android 靠 **applicationId（包名）** 区分应用：包名相同就会被当成同一个 App。
+仓库里的人 `defaultConfig.applicationId = "com.zxw"` 与正式版一致，为了测试时不覆盖它，
+`app/build.gradle` 的 `debug` 构建类型里加了后缀：
+
+```gradle
+buildTypes {
+    debug {
+        applicationIdSuffix '.dev'      // 测试包 = com.zxw.dev
+        versionNameSuffix '-dev'
+    }
+}
+```
+
+效果：
+
+| 构建方式 | 包名 | 桌面名称 | 是否影响已安装的正式版 |
+| --- | --- | --- | --- |
+| `assembleDebug` / Studio 的 Run | `com.zxw.dev` | BLE助手·测试 | 不影响，两个 App 并存 |
+| `assembleRelease` | `com.zxw` | 蓝牙BLE助手 | **会**替换正式版 |
+
+- 两个包的数据目录完全独立，卸载测试包不会清掉正式版的 BLE 配置与训练数据。
+- 桌面名称的差异来自 `app/src/debug/res/values/strings.xml`（debug 源集覆盖 `app_name`），
+  删掉这个文件就只有包名不同、名字一样。
+- 如果确实想让测试包就是正式包本身（覆盖安装），把 `applicationIdSuffix '.dev'` 那一行删掉。
+- **安装命令**：`gradlew.bat installDebug`（或 Android Studio 直接 Run）。
+  不要装 `app/build/outputs/apk/release/app-release.apk`，那会覆盖正式版。
+- 如果之前已经装过同包名、不同签名的包，系统会报
+  `INSTALL_FAILED_UPDATE_INCOMPATIBLE`，先卸载旧的那个再装即可。
+
+### 7.2 常见构建错误
 
 **① `No matching variant of com.android.tools.build:gradle:...`**
 Gradle 跑在 JDK 8（或 11）上，而 AGP 需要 JDK 17+。`settings.gradle` 已经内置了自检，

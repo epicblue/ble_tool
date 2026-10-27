@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    debug 源集的资源会覆盖 main 源集的同名资源。
+    这里只把应用名改掉，方便和手机上已安装的正式版区分（不会影响 release 包）。
+-->
+<resources>
+    <string name="app_name">BLE助手·测试</string>
+</resources>

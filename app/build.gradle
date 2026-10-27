@@ -14,6 +14,18 @@ android {
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
     buildTypes {
+        debug {
+            /*
+             * 给测试包单独的 applicationId，避免覆盖手机上已安装的正式版（com.zxw）。
+             * 安装后桌面上会同时存在两个图标：
+             *   蓝牙BLE助手     → com.zxw        （正式版，不受影响）
+             *   BLE助手·测试     → com.zxw.dev    （debug 包，随便装随便卸）
+             * 两个包的数据目录互相独立，卸载测试包不会动正式版的数据。
+             * 如果你确实想让测试包就是正式包本身，把下面一行删掉即可（会覆盖安装）。
+             */
+            applicationIdSuffix '.dev'
+            versionNameSuffix '-dev'
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
