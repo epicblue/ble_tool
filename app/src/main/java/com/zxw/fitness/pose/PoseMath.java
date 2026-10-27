@@ -54,16 +54,49 @@ public final class PoseMath {
         return (float) Math.toDegrees(Math.acos(cos));
     }
 
-    /** 左右两侧取平均；只可靠一侧则用该侧；都不可靠返回 NaN。 */
+    /** 两侧置信度差超过它时，只信更可信的一侧。 */
+    public static final float CONFIDENCE_GAP = 0.25f;
+    /** 两侧角度差超过它时，视为其中一侧的关键点被污染。 */
+    public static final float DISAGREE_ANGLE = 35f;
+
+    /**
+     * 左右两侧关节角融合。
+     *
+     * <p>直接取算术平均的问题：只要一侧关键点被遮挡/误检（哪怕置信度还有 0.6），
+     * 平均值就会被拖偏。实测一侧偏移 48° 时，平均值偏了 24°，足够把"撑到位"判成"没撑起"。</p>
+     *
+     * <p>融合规则：</p>
+     * <ol>
+     *     <li>只有一侧可靠 → 用该侧；</li>
+     *     <li>两侧置信度差 &gt; {@link #CONFIDENCE_GAP} → 只信高的一侧；</li>
+     *     <li>两侧角度差 &gt; {@link #DISAGREE_ANGLE} → 只信置信度高的一侧；</li>
+     *     <li>其余情况按置信度加权平均。</li>
+     * </ol>
+     */
     public static float averageAngle(PoseFrame f, int aL, int bL, int cL, int aR, int bR, int cR) {
         float left = angle(f, aL, bL, cL);
         float right = angle(f, aR, bR, cR);
         boolean hasLeft = !Float.isNaN(left);
         boolean hasRight = !Float.isNaN(right);
-        if (hasLeft && hasRight) {
+        if (!hasLeft || !hasRight) {
+            return hasLeft ? left : right;
+        }
+        float cl = minConfidence(f, aL, bL, cL);
+        float cr = minConfidence(f, aR, bR, cR);
+        if (Math.abs(cl - cr) > CONFIDENCE_GAP) {
+            return cl > cr ? left : right;
+        }
+        if (Math.abs(left - right) > DISAGREE_ANGLE) {
+            return cl >= cr ? left : right;
+        }
+        if (cl + cr <= 0f) {
             return (left + right) / 2f;
         }
-        return hasLeft ? left : right;
+        return (left * cl + right * cr) / (cl + cr);
+    }
+
+    private static float minConfidence(PoseFrame f, int a, int b, int c) {
+        return Math.min(f.getConfidence(a), Math.min(f.getConfidence(b), f.getConfidence(c)));
     }
 
     /** 躯干与竖直方向的夹角（度）：0 表示完全竖直，90 表示完全水平。 */

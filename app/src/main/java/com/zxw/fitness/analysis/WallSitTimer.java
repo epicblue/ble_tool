@@ -55,6 +55,7 @@ public class WallSitTimer implements HoldAnalyzer {
     private float kneeSum;
     private float kneeSquareSum;
     private float lastKnee = Float.NaN;
+    private final HoldClock clock = new HoldClock();
     private String statusText = "等待开始";
 
     public WallSitTimer(HoldListener listener) {
@@ -76,6 +77,7 @@ public class WallSitTimer implements HoldAnalyzer {
         kneeSum = 0f;
         kneeSquareSum = 0f;
         lastKnee = Float.NaN;
+        clock.end();
         statusText = "等待开始";
     }
 
@@ -83,12 +85,14 @@ public class WallSitTimer implements HoldAnalyzer {
     public void process(PoseFrame frame) {
         long now = frame == null ? System.currentTimeMillis() : frame.getTimestampMs();
         if (frame == null || !frame.isVisible()) {
+            clock.invalidate();
             interrupt(now);
             statusText = "未检测到人体";
             return;
         }
         BodyMetrics metrics = BodyMetrics.of(frame);
         if (!metrics.valid) {
+            clock.invalidate();
             interrupt(now);
             statusText = "未完整识别到身体";
             return;
@@ -100,6 +104,7 @@ public class WallSitTimer implements HoldAnalyzer {
                 PoseFrame.RIGHT_HIP, PoseFrame.RIGHT_KNEE, PoseFrame.RIGHT_ANKLE);
         lastKnee = knee;
         if (Float.isNaN(knee)) {
+            clock.invalidate();
             interrupt(now);
             statusText = "请让腿部完整入镜";
             return;
@@ -128,13 +133,16 @@ public class WallSitTimer implements HoldAnalyzer {
                 if (now - candidateStartMs >= ARM_MS) {
                     holdStartMs = candidateStartMs;
                     attempts++;
+                    clock.begin(holdStartMs);
+                    clock.accept(now);
                     if (listener != null) {
                         listener.onHoldStart(attempts);
                     }
                 }
                 statusText = "稳住，马上开始计时";
             } else {
-                currentHoldMs = now - holdStartMs;
+                clock.accept(now);
+                currentHoldMs = clock.getValidMs();
                 lastGoodMs = now;
                 goodFrames++;
                 kneeSum += knee;
@@ -146,6 +154,7 @@ public class WallSitTimer implements HoldAnalyzer {
 
         // ---- 不合格帧：给出具体原因 ----
         candidateStartMs = -1;
+        clock.invalidate();
         badFrames++;
         if (knee > MAX_KNEE) {
             statusText = "站起来了，坐回大腿水平位";
@@ -167,14 +176,14 @@ public class WallSitTimer implements HoldAnalyzer {
 
     private void interrupt(long now) {
         candidateStartMs = -1;
+        clock.invalidate();
         if (holdStartMs >= 0 && (lastGoodMs < 0 || now - lastGoodMs > DROPOUT_MS)) {
             finishHold();
         }
     }
 
     private void finishHold() {
-        long base = lastGoodMs >= 0 ? lastGoodMs : holdStartMs;
-        long duration = Math.max(0, base - holdStartMs);
+        long duration = clock.getValidMs();
         if (duration > 0) {
             bestHoldMs = Math.max(bestHoldMs, duration);
             totalHoldMs += duration;
@@ -186,6 +195,7 @@ public class WallSitTimer implements HoldAnalyzer {
         holdStartMs = -1;
         lastGoodMs = -1;
         candidateStartMs = -1;
+        clock.end();
         statusText = "已结束一组";
     }
 
@@ -194,8 +204,12 @@ public class WallSitTimer implements HoldAnalyzer {
         if (holdStartMs < 0) {
             return 0;
         }
-        long base = lastGoodMs >= 0 ? lastGoodMs : holdStartMs;
-        return Math.max(currentHoldMs, base - holdStartMs);
+        return clock.getValidMs();
+    }
+
+    @Override
+    public long getInterruptMs() {
+        return lastGoodMs < 0 ? 0 : clock.getInterruptMs(lastGoodMs);
     }
 
     @Override

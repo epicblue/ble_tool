@@ -47,6 +47,7 @@ public class PlankTimer implements HoldAnalyzer {
     private int sagWarnings;
     private int goodFrames;
     private int sagFrames;
+    private final HoldClock clock = new HoldClock();
     private String statusText = "等待开始";
 
     public PlankTimer(HoldListener listener) {
@@ -66,6 +67,7 @@ public class PlankTimer implements HoldAnalyzer {
         sagWarnings = 0;
         goodFrames = 0;
         sagFrames = 0;
+        clock.end();
         statusText = "等待开始";
     }
 
@@ -74,6 +76,7 @@ public class PlankTimer implements HoldAnalyzer {
         long now = frame == null ? System.currentTimeMillis() : frame.getTimestampMs();
 
         if (frame == null || !frame.isVisible()) {
+            clock.invalidate();
             if (lastValidMs >= 0 && now - lastValidMs > DROPOUT_MS) {
                 interrupt(now);
                 statusText = "未检测到人体";
@@ -84,6 +87,7 @@ public class PlankTimer implements HoldAnalyzer {
         }
         BodyMetrics metrics = BodyMetrics.of(frame);
         if (!metrics.valid) {
+            clock.invalidate();
             statusText = "未完整识别到身体";
             interrupt(now);
             return;
@@ -106,6 +110,7 @@ public class PlankTimer implements HoldAnalyzer {
             }
             statusText = "塌腰了，收紧腹部把髋抬起来";
             candidateStartMs = -1;
+            clock.invalidate();
             if (holdStartMs >= 0) {
                 if (lastGoodMs >= 0 && now - lastGoodMs <= GRACE_MS) {
                     statusText = statusText + "（宽限期，快调整）";
@@ -124,13 +129,16 @@ public class PlankTimer implements HoldAnalyzer {
                 if (now - candidateStartMs >= ARM_MS) {
                     holdStartMs = candidateStartMs;
                     attempts++;
+                    clock.begin(holdStartMs);
+                    clock.accept(now);
                     if (listener != null) {
                         listener.onHoldStart(attempts);
                     }
                 }
                 statusText = "撑住，马上开始计时";
             } else {
-                currentHoldMs = now - holdStartMs;
+                clock.accept(now);
+                currentHoldMs = clock.getValidMs();
                 lastGoodMs = now;
                 goodFrames++;
                 statusText = "保持中";
@@ -151,6 +159,7 @@ public class PlankTimer implements HoldAnalyzer {
         }
 
         candidateStartMs = -1;
+        clock.invalidate();
         if (holdStartMs >= 0) {
             if (lastGoodMs >= 0 && now - lastGoodMs <= GRACE_MS) {
                 statusText = statusText + "（宽限期，快调整）";
@@ -162,13 +171,14 @@ public class PlankTimer implements HoldAnalyzer {
 
     private void interrupt(long now) {
         candidateStartMs = -1;
+        clock.invalidate();
         if (holdStartMs >= 0 && (lastGoodMs < 0 || now - lastGoodMs > GRACE_MS)) {
             finishHold();
         }
     }
 
     private void finishHold() {
-        long duration = Math.max(0, lastGoodMs - holdStartMs);
+        long duration = clock.getValidMs();
         if (duration > 0) {
             bestHoldMs = Math.max(bestHoldMs, duration);
             totalHoldMs += duration;
@@ -180,6 +190,7 @@ public class PlankTimer implements HoldAnalyzer {
         holdStartMs = -1;
         lastGoodMs = -1;
         candidateStartMs = -1;
+        clock.end();
         statusText = "已结束一组";
     }
 
@@ -188,8 +199,7 @@ public class PlankTimer implements HoldAnalyzer {
         if (holdStartMs < 0) {
             return 0;
         }
-        long base = lastGoodMs > 0 ? lastGoodMs : holdStartMs;
-        return Math.max(currentHoldMs, base - holdStartMs);
+        return clock.getValidMs();
     }
 
     @Override
@@ -240,6 +250,11 @@ public class PlankTimer implements HoldAnalyzer {
     @Override
     public boolean hasResult() {
         return bestHoldMs > 0 || (holdStartMs >= 0 && getCurrentHoldMs() > 0);
+    }
+
+    @Override
+    public long getInterruptMs() {
+        return lastGoodMs < 0 ? 0 : clock.getInterruptMs(lastGoodMs);
     }
 
     /** 是否正在计时。 */

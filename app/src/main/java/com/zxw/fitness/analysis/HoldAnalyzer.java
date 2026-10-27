@@ -20,4 +20,14 @@ public interface HoldAnalyzer extends ExerciseAnalyzer {
 
     /** 附加信息，例如贴墙比例，可为空字符串。 */
     String getExtraText();
+
+    /**
+     * 本组被中断（宽限期）的累计时长（毫秒）。
+     *
+     * <p>成绩只统计"有效保持时间"，休息/调整姿势的时间不计入，但会通过这个值暴露出来，
+     * 便于界面显示"有效保持率"。</p>
+     */
+    default long getInterruptMs() {
+        return 0;
+    }
 }

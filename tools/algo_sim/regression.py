@@ -228,6 +228,115 @@ check('highFrequencyJitter', c.steps <= 3, f'steps={c.steps}')
 
 
 
+
+# ================= 以下为"算法改进"后新增的回归用例 =================
+
+# A0) HoldClock 单元语义（对应 PoseAnalyzerTest.holdClockSkipsInterrupt）
+hc = HoldClock()
+hc.begin(0); hc.accept(0); hc.accept(100); hc.accept(200)
+hc.invalidate(); hc.accept(900); hc.accept(1000)
+check('hold clock skips interrupt',
+      hc.valid_ms() == 300 and hc.wall_ms(1000) == 1000 and hc.interrupt_ms(1000) == 700,
+      'valid=%d wall=%d interrupt=%d' % (hc.valid_ms(), hc.wall_ms(1000), hc.interrupt_ms(1000)))
+hc.end()
+check('hold clock keeps value after end', hc.valid_ms() == 300 and hc.wall_ms(9999) == 300,
+      'valid=%d' % hc.valid_ms())
+
+# A) 计时只累计有效时间：中断不再算进成绩
+def _plank_valid(gap_frames):
+    a = Plank(); ts = 0
+    for _ in range(30):
+        a.process(plank(ts, 0)); ts += STEP
+    for _ in range(gap_frames):
+        a.process(plank(ts, 0.30)); ts += STEP
+    for _ in range(20):
+        a.process(plank(ts, 0)); ts += STEP
+    return a
+
+no_gap = _plank_valid(0).best_ms()            # 同一段 50 帧连续保持：3234ms
+with_gap = _plank_valid(9).best_ms()          # 中间塌腰 9 帧（≈594ms）
+# 修复前：墙钟 3828ms 全部算进成绩；修复后应退回到"50 帧有效时间"附近
+check('hold skips grace gap',
+      3000 <= with_gap <= no_gap + 66,
+      'no_gap=%d with_gap=%d（修复前会是 3828）' % (no_gap, with_gap))
+
+t = WallSit(); ts = 0
+for _ in range(30):
+    t.process(wall_sit(ts, 0.0)); ts += STEP
+for _ in range(9):
+    t.process(wall_sit(ts, 0.25)); ts += STEP     # 站起来约 0.6s
+for _ in range(20):
+    t.process(wall_sit(ts, 0.0)); ts += STEP
+check('wall sit skips gap', 3000 <= t.best_ms() <= 3300 and t.attempts == 1,
+      'best=%d attempts=%d' % (t.best_ms(), t.attempts))
+
+# B) 双侧融合：一侧关键点被污染时不再拖偏
+def _squeeze(f, kx=1.0):
+    return F({i: (0.5 + (x - 0.5) * kx, y, z, c) for i, (x, y, z, c) in f.p.items()}, f.ts)
+
+f = pushup(0, 155)
+pts = dict(f.p)
+lx, ly = pts[LE][0], pts[LE][1]
+pts[LE] = (lx + 0.05, ly - 0.02, 0, 0.6)      # 左肘被拉偏，置信度仅 0.6
+bad = F(pts, 0)
+fused = avg_angle(bad, LS, LE, LW, RS, RE, RW)
+check('fused angle ignores polluted side', abs(fused - 155.0) <= 5.0,
+      'fused=%.1f（直接平均会到 131）' % fused)
+
+# C) 正对镜头深蹲：膝角被压扁，靠髋部下移仍能判到位
+for kx in (1.0, 0.75, 0.5):
+    c = Squat(); ts = 0
+    for _ in range(3):
+        for knee in [175, 160, 140, 120, 95, 95, 120, 140, 160, 175]:
+            drop = (150 - knee) / 150 if knee < 150 else 0
+            for _ in range(2):
+                c.process(_squeeze(squat(ts, knee, drop), kx)); ts += STEP
+    check('frontal squat counts (kx=%.2f)' % kx, c.good == 3 and c.bad == 0,
+          'good=%d bad=%d' % (c.good, c.bad))
+
+# D) 斜对镜头俯卧撑：关节角被缩短，靠手腕位移仍能判到位
+def _pushup_profile(per_half=8, top=155, bottom=92, drop=0.13):
+    down = [(top + (bottom - top) * (i + 1) / per_half, drop * (i + 1) / per_half)
+            for i in range(per_half)]
+    up = [(bottom + (top - bottom) * (i + 1) / per_half, drop * (1 - (i + 1) / per_half))
+          for i in range(per_half)]
+    return down + up
+
+for kx in (1.0, 0.75):
+    c = PushUp(); ts = 0
+    frames = [pushup(0, 155, 0, False, 0.0)] * 5
+    for _ in range(3):
+        frames += [pushup(0, e, 0, False, d) for e, d in _pushup_profile()]
+    frames += [pushup(0, 155, 0, False, 0.0)] * 5
+    for fr in frames:
+        fr.ts = ts
+        c.process(_squeeze(fr, kx)); ts += STEP
+    check('oblique pushup counts (kx=%.2f)' % kx, c.good == 3 and c.bad == 0,
+          'good=%d bad=%d' % (c.good, c.bad))
+
+# E) 走 / 跑分类
+def _feed_run(cadence_ms, bob=0.0, cycles=6, per_side=4, lift=0.10):
+    c = RunSteps(); ts = 0
+    for i in range(cycles):
+        for k in range(per_side):
+            c.process(running(ts, lift, 0.0, bob if (i + k) % 2 == 0 else 0.0))
+            ts += cadence_ms / per_side
+        for k in range(per_side):
+            c.process(running(ts, 0.0, lift, bob if (i + k) % 2 == 0 else 0.0))
+            ts += cadence_ms / per_side
+    return c
+
+check('gait walk 90', _feed_run(660).gait() == 'WALK', _feed_run(660).gait())
+check('gait walk 120', _feed_run(500).gait() == 'WALK', _feed_run(500).gait())
+check('gait run 160', _feed_run(375).gait() == 'RUN', _feed_run(375).gait())
+check('gait 135 with bob → run', _feed_run(444, 0.06).gait() == 'RUN', _feed_run(444, 0.06).gait())
+check('gait 135 no bob → walk', _feed_run(444, 0.0).gait() == 'WALK', _feed_run(444, 0.0).gait())
+c = RunSteps(); ts = 0
+for _ in range(40):
+    c.process(standing(ts)); ts += STEP
+check('gait unknown when standing', c.gait() == 'UNKNOWN', c.gait())
+
+
 failed = [r for r in results if not r[1]]
 for name, ok, extra in results:
     print(('PASS  ' if ok else 'FAIL  ') + name.ljust(34) + ('[' + extra + ']' if extra else ''))

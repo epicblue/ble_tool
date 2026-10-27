@@ -14,7 +14,8 @@ import java.util.Locale;
  * <ol>
  *     <li><b>深度用双信号</b>：侧对镜头时用肩-肘-腕夹角；正对/斜对镜头（关节角在图像上被压缩）
  *     或手臂关键点不可靠时，自动改用"手腕比肩低多少 / 身体尺度"的比例量。
- *     两者都能用时取更灵敏的那个。</li>
+ *     两者都能用时<b>取更深的那个</b>（{@code max}）：两路都是"下限估计"，
+ *     取大号才能保证正确姿势一定被判到位，也不会因为某一路失效而整组漏计。</li>
  *     <li><b>身体直线度用比例量</b>：{@link BodyMetrics#sagRatio}（髋偏离肩-踝连线的距离 / 躯干长度），
  *     与机位、人体距离无关；关节角只作为侧对镜头时的辅助判据。</li>
  *     <li><b>抗丢帧</b>：短暂丢失人体（{@link #DROPOUT_MS} 以内）不会打断正在进行的动作，
@@ -179,16 +180,15 @@ public class PushUpCounter implements RepAnalyzer {
                 : clamp((angleTop() - elbow) / (angleTop() - depthAngle()), 0f, 1.25f);
         float depthByDrop = dropDepth(metrics.wristDropRatio);
 
-        boolean preferDrop = metrics.view == BodyMetrics.View.FRONTAL
-                || Float.isNaN(depthByAngle);
+        // 两路深度都是"镜头斜对时的下限"：关节角会被透视缩短而低估，
+        // 手腕下降沿重力方向量、与横向透视无关，因此直接取较大值，不再按视角二选一。
         float depth;
-        if (preferDrop && !Float.isNaN(depthByDrop)) {
+        if (Float.isNaN(depthByAngle)) {
             depth = depthByDrop;
-        } else if (!Float.isNaN(depthByAngle)) {
-            // 两个信号都有时取更灵敏的（斜对镜头时角度会被压缩）
-            depth = Float.isNaN(depthByDrop) ? depthByAngle : Math.max(depthByAngle, depthByDrop);
+        } else if (Float.isNaN(depthByDrop)) {
+            depth = depthByAngle;
         } else {
-            depth = depthByDrop;
+            depth = Math.max(depthByAngle, depthByDrop);
         }
 
         if (Float.isNaN(depth)) {

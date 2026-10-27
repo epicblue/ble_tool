@@ -60,6 +60,7 @@ public class HandstandTimer implements HoldAnalyzer {
     private int holdFrames;
     private float tiltSum;
     private boolean inGrace;
+    private final HoldClock clock = new HoldClock();
     private String statusText = "等待开始";
 
     public HandstandTimer(ExerciseType type, HoldListener listener) {
@@ -87,6 +88,7 @@ public class HandstandTimer implements HoldAnalyzer {
         holdFrames = 0;
         tiltSum = 0f;
         inGrace = false;
+        clock.end();
         statusText = "等待开始";
     }
 
@@ -136,13 +138,16 @@ public class HandstandTimer implements HoldAnalyzer {
                     holdStartMs = candidateStartMs;
                     attempts++;
                     inGrace = false;
+                    clock.begin(holdStartMs);
+                    clock.accept(now);
                     if (listener != null) {
                         listener.onHoldStart(attempts);
                     }
                 }
                 statusText = "稳住，马上开始计时";
             } else {
-                currentHoldMs = now - holdStartMs;
+                clock.accept(now);
+                currentHoldMs = clock.getValidMs();
                 lastGoodMs = now;
                 holdFrames++;
                 tiltSum += tilt;
@@ -151,10 +156,11 @@ public class HandstandTimer implements HoldAnalyzer {
             }
         } else {
             candidateStartMs = -1;
+            clock.invalidate();
             if (holdStartMs >= 0) {
-                if (now - lastGoodMs <= GRACE_MS) {
+                if (lastGoodMs >= 0 && now - lastGoodMs <= GRACE_MS) {
                     inGrace = true;
-                    currentHoldMs = lastGoodMs - holdStartMs;
+                    currentHoldMs = clock.getValidMs();
                     statusText = "快要掉了，坚持住";
                 } else {
                     finishHold();
@@ -176,6 +182,7 @@ public class HandstandTimer implements HoldAnalyzer {
 
     private void handleBadFrame(long now, String message) {
         candidateStartMs = -1;
+        clock.invalidate();
         if (holdStartMs >= 0) {
             if (lastGoodMs >= 0 && now - lastGoodMs <= GRACE_MS) {
                 inGrace = true;
@@ -190,7 +197,7 @@ public class HandstandTimer implements HoldAnalyzer {
     }
 
     private void finishHold() {
-        long duration = Math.max(0, lastGoodMs - holdStartMs);
+        long duration = clock.getValidMs();
         if (duration > 0) {
             bestHoldMs = Math.max(bestHoldMs, duration);
             totalHoldMs += duration;
@@ -203,6 +210,7 @@ public class HandstandTimer implements HoldAnalyzer {
         lastGoodMs = -1;
         candidateStartMs = -1;
         inGrace = false;
+        clock.end();
         statusText = "已结束一组";
     }
 
@@ -247,7 +255,12 @@ public class HandstandTimer implements HoldAnalyzer {
 
     @Override
     public long getCurrentHoldMs() {
-        return holdStartMs < 0 ? 0 : Math.max(currentHoldMs, lastGoodMs - holdStartMs);
+        return holdStartMs < 0 ? 0 : clock.getValidMs();
+    }
+
+    @Override
+    public long getInterruptMs() {
+        return lastGoodMs < 0 ? 0 : clock.getInterruptMs(lastGoodMs);
     }
 
     @Override

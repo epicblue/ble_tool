@@ -172,20 +172,22 @@ print(f'  只取更可信的一侧    → {right:6.1f}°（偏差 0°）')
 print('  注：躯干水平/竖直、sagRatio 都用中点，单侧污染影响比关节角小；'
       '关节角是最脆的一环。')
 
-section('实验 F：走路和跑步用同一套逻辑，无法区分')
-for label, ms in (('慢走 ~90 步/分', 660), ('快走 ~120 步/分', 500), ('慢跑 ~160 步/分', 375)):
+section('实验 F：步频 + 躯干起伏区分走 / 跑（修复后）')
+for label, ms, bob in (('慢走 ~90 步/分', 660, 0.0), ('快走 ~120 步/分', 500, 0.0),
+                       ('慢跑 ~160 步/分', 375, 0.0), ('135 步/分 有起伏', 444, 0.06),
+                       ('135 步/分 无起伏', 444, 0.0)):
     c = RunSteps()
     ts = 0
-    for _ in range(6):
-        for _ in range(4):
-            c.process(running(ts, 0.10, 0.0)); ts += ms / 4
-        for _ in range(4):
-            c.process(running(ts, 0.0, 0.10)); ts += ms / 4
-    print(f'  {label}: 计到 {c.steps} 步，步频 {c.cadence():.0f} 步/分')
-print('  → 动作名是"跑步计步"，但走路的步数同样会被计入；'
-      '要么改名"计步"，要么按步频+躯干上下振幅做走/跑分类。')
+    for i in range(6):
+        for k in range(4):
+            c.process(running(ts, 0.10, 0.0, bob if (i + k) % 2 == 0 else 0.0)); ts += ms / 4
+        for k in range(4):
+            c.process(running(ts, 0.0, 0.10, bob if (i + k) % 2 == 0 else 0.0)); ts += ms / 4
+    print(f'  {label}: 计到 {c.steps} 步，步频 {c.cadence():.0f} 步/分，'
+          f'起伏 {c.hip_bob():.2f} → {c.gait()}')
+print('  → 步频 ≥150 判跑、≤120 判走，中间区间看躯干起伏（阈值 0.05）。')
 
-section('实验 G：计时类的宽限期会把真实中断"吞掉"')
+section('实验 G：宽限期内中断不再计入成绩（修复后）')
 for gap_ms in (300, 600, 900, 1500):
     t = WallSit()
     ts = 0
@@ -197,5 +199,5 @@ for gap_ms in (300, 600, 900, 1500):
         broken_ms += STEP
     for _ in range(20):
         t.process(wall_sit(ts, 0.0)); ts += STEP
-    print(f'  中断 {gap_ms:>5}ms（GRACE_MS=800）→ 仍算 {t.best_ms():>5}ms，'
-          f'{"未被算作中断" if t.attempts == 1 else "已切分为新的一组"}')
+    note = '宽限期内，中断不计入成绩' if t.attempts == 1 else '超过宽限期，已切分为新的一组'
+    print(f'  中断 {gap_ms:>5}ms（GRACE_MS=800）→ 有效 {t.best_ms():>5}ms，{note}')

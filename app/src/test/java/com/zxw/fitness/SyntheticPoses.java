@@ -33,13 +33,24 @@ final class SyntheticPoses {
      * @param kneel 是否跪姿（膝盖弯曲、脚踝上移）
      */
     static PoseFrame pushUp(long ts, float targetElbowDeg, float sag, boolean kneel) {
+        return pushUp(ts, targetElbowDeg, sag, kneel, 0f);
+    }
+
+    /**
+     * 俯卧撑，可指定"身体下沉量"。
+     *
+     * <p>{@code chestDrop} &gt; 0 时手和脚位置不变、肩随身体下沉（髋只下沉一半，身体绕脚踝转动），
+     * 这样"手腕比肩低多少"会随动作变化 —— 这是正对/斜对镜头时的主要判据。</p>
+     */
+    static PoseFrame pushUp(long ts, float targetElbowDeg, float sag, boolean kneel,
+                            float chestDrop) {
         float[] x = new float[PoseFrame.LANDMARK_COUNT];
         float[] y = new float[PoseFrame.LANDMARK_COUNT];
         float[] z = new float[PoseFrame.LANDMARK_COUNT];
         float[] c = new float[PoseFrame.LANDMARK_COUNT];
 
         float sx = 0.40f;
-        float sy = 0.55f;
+        float sy = 0.55f + chestDrop;
         float wx = 0.40f;
         float wy = 0.75f;
         float half = (wy - sy) / 2f;
@@ -47,7 +58,7 @@ final class SyntheticPoses {
         float ex = sx + h;
         float ey = (sy + wy) / 2f;
 
-        float hipY = 0.55f + sag;
+        float hipY = 0.55f + sag + chestDrop * 0.5f;
         float ankleY = 0.55f;
         float kneeX = kneel ? 0.68f : 0.70f;
         float kneeY = kneel ? 0.62f : 0.55f;
@@ -98,8 +109,8 @@ final class SyntheticPoses {
         float[] z = new float[PoseFrame.LANDMARK_COUNT];
         float[] c = new float[PoseFrame.LANDMARK_COUNT];
 
-        float shoulderY = 0.22f;
         float hipY = 0.42f + hipDrop * 0.25f;
+        float shoulderY = hipY - 0.20f;     // 躯干长度恒定：真实下蹲时肩会跟着髋一起下沉
         float ankleY = 0.82f;
         // 膝角（髋-膝-踝）精确等于 kneeDeg：膝位于髋-踝垂直平分线上、向前偏移
         float halfHeight = (ankleY - hipY) / 2f;
@@ -107,7 +118,7 @@ final class SyntheticPoses {
         float forward = (float) (halfHeight * Math.tan(Math.PI / 2 - half));
         float kneeY = (hipY + ankleY) / 2f;
 
-        put(x, y, c, PoseFrame.NOSE, 0.45f, 0.15f, 0.9f);
+        put(x, y, c, PoseFrame.NOSE, 0.45f, shoulderY - 0.07f, 0.9f);
         for (int side = 0; side < 2; side++) {
             int[] idx = side == 0
                     ? new int[]{PoseFrame.LEFT_SHOULDER, PoseFrame.LEFT_ELBOW, PoseFrame.LEFT_WRIST,
@@ -115,8 +126,8 @@ final class SyntheticPoses {
                     : new int[]{PoseFrame.RIGHT_SHOULDER, PoseFrame.RIGHT_ELBOW, PoseFrame.RIGHT_WRIST,
                     PoseFrame.RIGHT_HIP, PoseFrame.RIGHT_KNEE, PoseFrame.RIGHT_ANKLE};
             put(x, y, c, idx[0], 0.45f, shoulderY, 0.9f);
-            put(x, y, c, idx[1], 0.45f, 0.32f, 0.9f);
-            put(x, y, c, idx[2], 0.45f, 0.40f, 0.9f);
+            put(x, y, c, idx[1], 0.45f, shoulderY + 0.10f, 0.9f);
+            put(x, y, c, idx[2], 0.45f, shoulderY + 0.18f, 0.9f);
             put(x, y, c, idx[3], 0.45f, hipY, 0.9f);
             put(x, y, c, idx[4], 0.45f + forward, kneeY, 0.9f);
             put(x, y, c, idx[5], 0.45f, ankleY, 0.9f);
@@ -277,12 +288,17 @@ final class SyntheticPoses {
      * 跑步/原地跑：liftLeft / liftRight 控制两只脚抬起的幅度（0 表示落地）。
      */
     static PoseFrame running(long ts, float liftLeft, float liftRight) {
+        return running(ts, liftLeft, liftRight, 0f);
+    }
+
+    /** 跑步，可指定躯干上下起伏（跑步比走路明显）。 */
+    static PoseFrame running(long ts, float liftLeft, float liftRight, float hipBob) {
         float[] x = new float[PoseFrame.LANDMARK_COUNT];
         float[] y = new float[PoseFrame.LANDMARK_COUNT];
         float[] z = new float[PoseFrame.LANDMARK_COUNT];
         float[] c = new float[PoseFrame.LANDMARK_COUNT];
 
-        float hipY = 0.50f;
+        float hipY = 0.50f - hipBob;
         float shoulderY = hipY - 0.26f;
         put(x, y, c, PoseFrame.NOSE, 0.5f, shoulderY - 0.06f, 0.9f);
 
@@ -305,6 +321,61 @@ final class SyntheticPoses {
     }
 
     /** 一次完整动作的角度序列（下放 + 撑起）。 */
+    /**
+     * 把画面横向压缩 kx 倍（以画面中心为基准），模拟"镜头没有正对动作平面"。
+     * kx = 1 表示正对；0.75 ≈ 镜头偏 41°。
+     */
+    static PoseFrame squeeze(PoseFrame f, float kx) {
+        float[] x = new float[PoseFrame.LANDMARK_COUNT];
+        float[] y = new float[PoseFrame.LANDMARK_COUNT];
+        float[] z = new float[PoseFrame.LANDMARK_COUNT];
+        float[] c = new float[PoseFrame.LANDMARK_COUNT];
+        for (int i = 0; i < PoseFrame.LANDMARK_COUNT; i++) {
+            x[i] = 0.5f + (f.getX(i) - 0.5f) * kx;
+            y[i] = f.getY(i);
+            z[i] = f.getZ(i);
+            c[i] = f.getConfidence(i);
+        }
+        return PoseFrame.of(f.getTimestampMs(), x, y, z, c);
+    }
+
+    /** 把指定关键点的置信度压低（模拟单侧手臂被遮挡/误检）。 */
+    static PoseFrame lowerConfidence(PoseFrame f, float confidence, int... landmarks) {
+        float[] x = new float[PoseFrame.LANDMARK_COUNT];
+        float[] y = new float[PoseFrame.LANDMARK_COUNT];
+        float[] z = new float[PoseFrame.LANDMARK_COUNT];
+        float[] c = new float[PoseFrame.LANDMARK_COUNT];
+        for (int i = 0; i < PoseFrame.LANDMARK_COUNT; i++) {
+            x[i] = f.getX(i);
+            y[i] = f.getY(i);
+            z[i] = f.getZ(i);
+            c[i] = f.getConfidence(i);
+        }
+        for (int index : landmarks) {
+            c[index] = confidence;
+        }
+        return PoseFrame.of(f.getTimestampMs(), x, y, z, c);
+    }
+
+    /** 平移指定关键点（模拟单侧肢体被误检）。 */
+    static PoseFrame shiftLandmarks(PoseFrame f, float dx, float dy, int... landmarks) {
+        float[] x = new float[PoseFrame.LANDMARK_COUNT];
+        float[] y = new float[PoseFrame.LANDMARK_COUNT];
+        float[] z = new float[PoseFrame.LANDMARK_COUNT];
+        float[] c = new float[PoseFrame.LANDMARK_COUNT];
+        for (int i = 0; i < PoseFrame.LANDMARK_COUNT; i++) {
+            x[i] = f.getX(i);
+            y[i] = f.getY(i);
+            z[i] = f.getZ(i);
+            c[i] = f.getConfidence(i);
+        }
+        for (int index : landmarks) {
+            x[index] += dx;
+            y[index] += dy;
+        }
+        return PoseFrame.of(f.getTimestampMs(), x, y, z, c);
+    }
+
     static float[] repProfile(float bottomAngle, float topAngle, int framesPerHalf) {
         int nDown = framesPerHalf;
         int nUp = framesPerHalf;

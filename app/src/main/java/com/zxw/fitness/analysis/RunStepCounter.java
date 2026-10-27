@@ -37,6 +37,14 @@ public class RunStepCounter implements RepAnalyzer {
     private static final int INTERVAL_WINDOW = 10;
     /** 一侧至少要连续保持几帧，翻转才算一步（滤掉高频抖动）。 */
     private static final int MIN_STABLE_FRAMES = 2;
+    /** 步频 ≥ 该值直接判为跑步（步/分）。 */
+    private static final float RUN_CADENCE = 150f;
+    /** 步频 ≤ 该值直接判为走路（步/分）。 */
+    private static final float WALK_CADENCE = 120f;
+    /** 步频在两者之间时，用躯干上下起伏（×躯干长度）区分：跑步腾空更明显。 */
+    private static final float HIP_BOB_RUN = 0.05f;
+    /** 起伏统计窗口（帧）。 */
+    private static final int BOB_WINDOW = 20;
 
     private final RepListener listener;
 
@@ -54,6 +62,10 @@ public class RunStepCounter implements RepAnalyzer {
     private long lastValidMs = -1;
     private float maxSignal;
     private float lastSignal;
+    private float lastScale = 0.04f;
+    private final float[] hipHistory = new float[BOB_WINDOW];
+    private int hipCount;
+    private int hipIndex;
     private String statusText = "等待开始";
 
     public RunStepCounter(RepListener listener) {
@@ -72,6 +84,9 @@ public class RunStepCounter implements RepAnalyzer {
         lastValidMs = -1;
         maxSignal = 0f;
         lastSignal = 0f;
+        lastScale = 0.04f;
+        hipCount = 0;
+        hipIndex = 0;
         statusText = "等待开始";
     }
 
@@ -104,6 +119,8 @@ public class RunStepCounter implements RepAnalyzer {
         lastValidMs = now;
 
         float scale = Math.max(0.04f, metrics.bodyScale);
+        lastScale = scale;
+        pushHip(metrics.hipY);
         float signal = (frame.getY(PoseFrame.RIGHT_ANKLE) - frame.getY(PoseFrame.LEFT_ANKLE)) / scale;
         lastSignal = signal;
         maxSignal = Math.max(maxSignal, Math.abs(signal));
@@ -157,6 +174,70 @@ public class RunStepCounter implements RepAnalyzer {
         if (intervalCount < INTERVAL_WINDOW) {
             intervalCount++;
         }
+    }
+
+    private void pushHip(float hipY) {
+        hipHistory[hipIndex] = hipY;
+        hipIndex = (hipIndex + 1) % BOB_WINDOW;
+        if (hipCount < BOB_WINDOW) {
+            hipCount++;
+        }
+    }
+
+    /** 躯干上下起伏（峰峰值 ÷ 躯干长度）；帧数不足返回 NaN。 */
+    public float getHipBob() {
+        if (hipCount < 4) {
+            return Float.NaN;
+        }
+        float min = Float.MAX_VALUE;
+        float max = -Float.MAX_VALUE;
+        for (int i = 0; i < hipCount; i++) {
+            min = Math.min(min, hipHistory[i]);
+            max = Math.max(max, hipHistory[i]);
+        }
+        return (max - min) / Math.max(0.04f, lastScale);
+    }
+
+    /**
+     * 走 / 跑分类：步频为主，模糊区间看躯干起伏。
+     *
+     * <p>为什么需要：脚踝交替离地的模式走和跑几乎一样，只看信号的话
+     * 90 步/分和 160 步/分都会被当成"跑步计步"。跑步有明显的腾空与躯干起伏，
+     * 用步频 + 起伏可以在不增加摄像头要求的前提下区分。</p>
+     *
+     * @return {@code "RUN"} / {@code "WALK"} / {@code "UNKNOWN"}
+     */
+    public String getGait() {
+        if (steps < 2) {
+            return "UNKNOWN";
+        }
+        float cadence = getCadence();
+        if (cadence <= 0f) {
+            return "UNKNOWN";
+        }
+        if (cadence >= RUN_CADENCE) {
+            return "RUN";
+        }
+        if (cadence <= WALK_CADENCE) {
+            return "WALK";
+        }
+        float bob = getHipBob();
+        if (Float.isNaN(bob)) {
+            return cadence >= (RUN_CADENCE + WALK_CADENCE) / 2f ? "RUN" : "WALK";
+        }
+        return bob >= HIP_BOB_RUN ? "RUN" : "WALK";
+    }
+
+    /** 界面用语：跑步 / 走路 / 空字符串。 */
+    public String getGaitText() {
+        String gait = getGait();
+        if ("RUN".equals(gait)) {
+            return "跑步";
+        }
+        if ("WALK".equals(gait)) {
+            return "走路";
+        }
+        return "";
     }
 
     /** @return 平均步频（步/分），无数据时为 0。 */
@@ -217,9 +298,11 @@ public class RunStepCounter implements RepAnalyzer {
     @Override
     public String getDetailText() {
         if (steps == 0) {
-            return "开始跑步后自动计步 · 步幅识别基于左右脚交替";
+            return "跑起来（或原地踏步）自动计步 · 需拍到双脚";
         }
-        return String.format(Locale.US, "步频 %.0f 步/分 · 共 %d 步", getCadence(), steps);
+        String gait = getGaitText();
+        String prefix = gait.length() == 0 ? "" : gait + " · ";
+        return String.format(Locale.US, "%s步频 %.0f 步/分 · 共 %d 步", prefix, getCadence(), steps);
     }
 
     @Override

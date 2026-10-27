@@ -6,6 +6,7 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 import com.zxw.fitness.analysis.HandstandTimer;
+import com.zxw.fitness.analysis.HoldClock;
 import com.zxw.fitness.analysis.PlankTimer;
 import com.zxw.fitness.analysis.PullUpCounter;
 import com.zxw.fitness.analysis.RunStepCounter;
@@ -18,6 +19,7 @@ import com.zxw.fitness.data.PoseLogWriter;
 import com.zxw.fitness.model.ExerciseType;
 import com.zxw.fitness.model.PoseFrame;
 import com.zxw.fitness.pose.BodyMetrics;
+import com.zxw.fitness.pose.PoseMath;
 import com.zxw.fitness.pose.PoseSmoother;
 
 import org.junit.Test;
@@ -27,6 +29,9 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static com.zxw.fitness.SyntheticPoses.FPS_STEP_MS;
+import static com.zxw.fitness.SyntheticPoses.lowerConfidence;
+import static com.zxw.fitness.SyntheticPoses.shiftLandmarks;
+import static com.zxw.fitness.SyntheticPoses.squeeze;
 import static com.zxw.fitness.SyntheticPoses.handstand;
 import static com.zxw.fitness.SyntheticPoses.plank;
 import static com.zxw.fitness.SyntheticPoses.pullUp;
@@ -349,6 +354,173 @@ public class PoseAnalyzerTest {
             ts += 40;
         }
         assertTrue("steps=" + counter.getGoodReps(), counter.getGoodReps() <= 3);
+    }
+
+    // ---------------- 计时只累计有效时间 ----------------
+
+    @Test
+    public void plankIgnoresGraceGap() {
+        PlankTimer timer = new PlankTimer(null);
+        long ts = 0;
+        for (int i = 0; i < 30; i++) {
+            timer.process(plank(ts, 0f, true));
+            ts += FPS_STEP_MS;
+        }
+        for (int i = 0; i < 9; i++) {          // 塌腰约 600ms（在 800ms 宽限期内）
+            timer.process(plank(ts, 0.30f, true));
+            ts += FPS_STEP_MS;
+        }
+        for (int i = 0; i < 20; i++) {
+            timer.process(plank(ts, 0f, true));
+            ts += FPS_STEP_MS;
+        }
+        long best = timer.getBestHoldMs();
+        // 修复前会用"最后一帧 - 开始时间"（≈3.8 秒），把塌腰那 600ms 也算进成绩
+        assertTrue("best=" + best, best >= 3000 && best <= 3300);
+        assertTrue("中断时间应被记录: " + timer.getInterruptMs(), timer.getInterruptMs() > 0);
+    }
+
+    @Test
+    public void wallSitIgnoresGraceGap() {
+        WallSitTimer timer = new WallSitTimer(null);
+        long ts = 0;
+        for (int i = 0; i < 30; i++) {
+            timer.process(wallSit(ts, 0f));
+            ts += FPS_STEP_MS;
+        }
+        for (int i = 0; i < 9; i++) {          // 站起来约 600ms
+            timer.process(wallSit(ts, 0.25f));
+            ts += FPS_STEP_MS;
+        }
+        for (int i = 0; i < 20; i++) {
+            timer.process(wallSit(ts, 0f));
+            ts += FPS_STEP_MS;
+        }
+        long best = timer.getBestHoldMs();
+        assertTrue("best=" + best, best >= 3000 && best <= 3300);
+        assertEquals(1, timer.getAttempts());
+    }
+
+    @Test
+    public void holdClockSkipsInterrupt() {
+        HoldClock clock = new HoldClock();
+        clock.begin(0);
+        clock.accept(0);
+        clock.accept(100);
+        clock.accept(200);
+        clock.invalidate();          // 这一帧不合格（宽限期内姿势走样）
+        clock.accept(900);           // 空白 700ms 不计入
+        clock.accept(1000);
+        assertEquals(300, clock.getValidMs());          // 200 + 100
+        assertEquals(1000, clock.getWallMs(1000));
+        assertEquals(700, clock.getInterruptMs(1000));
+        clock.end();
+        assertEquals(300, clock.getValidMs());          // 结束后仍可读取本组成绩
+        assertEquals(300, clock.getWallMs(9999));
+    }
+
+    // ---------------- 双侧关节角融合 ----------------
+
+    @Test
+    public void fusedAngleIgnoresPollutedSide() {
+        PoseFrame top = pushUp(0, 155f, 0f, false);
+        float clean = PoseMath.averageAngle(top,
+                PoseFrame.LEFT_SHOULDER, PoseFrame.LEFT_ELBOW, PoseFrame.LEFT_WRIST,
+                PoseFrame.RIGHT_SHOULDER, PoseFrame.RIGHT_ELBOW, PoseFrame.RIGHT_WRIST);
+        assertTrue("clean=" + clean, Math.abs(clean - 155f) < 1f);
+
+        // 左肘被误检（位置偏、置信度 0.6）：直接平均会被拖到 ~131°
+        PoseFrame polluted = shiftLandmarks(top, 0.05f, -0.02f, PoseFrame.LEFT_ELBOW);
+        polluted = lowerConfidence(polluted, 0.6f, PoseFrame.LEFT_ELBOW,
+                PoseFrame.LEFT_SHOULDER, PoseFrame.LEFT_WRIST);
+        float fused = PoseMath.averageAngle(polluted,
+                PoseFrame.LEFT_SHOULDER, PoseFrame.LEFT_ELBOW, PoseFrame.LEFT_WRIST,
+                PoseFrame.RIGHT_SHOULDER, PoseFrame.RIGHT_ELBOW, PoseFrame.RIGHT_WRIST);
+        assertTrue("fused=" + fused, Math.abs(fused - 155f) <= 5f);
+    }
+
+    // ---------------- 机位斜对 / 正对 ----------------
+
+    @Test
+    public void frontalSquatStillCounts() {
+        SquatCounter counter = new SquatCounter(null);
+        long ts = 0;
+        float[] knees = {175f, 160f, 140f, 120f, 95f, 95f, 120f, 140f, 160f, 175f};
+        for (int rep = 0; rep < 3; rep++) {
+            for (float knee : knees) {
+                float drop = knee < 150f ? (150f - knee) / 150f : 0f;
+                for (int i = 0; i < 2; i++) {
+                    // kx=0.5：正对镜头，膝角在图像上被压扁（读成 ~125°）
+                    counter.process(squeeze(squat(ts, knee, drop), 0.5f));
+                    ts += FPS_STEP_MS;
+                }
+            }
+        }
+        assertEquals("good=" + counter.getGoodReps() + " bad=" + counter.getBadReps(),
+                3, counter.getGoodReps());
+        assertEquals(0, counter.getBadReps());
+    }
+
+    @Test
+    public void obliquePushUpStillCounts() {
+        for (float kx : new float[]{1f, 0.75f}) {
+            PushUpCounter counter = new PushUpCounter(ExerciseType.PUSHUP, "", null);
+            long ts = 0;
+            for (int i = 0; i < 5; i++) {
+                counter.process(squeeze(pushUp(ts, 155f, 0f, false, 0f), kx));
+                ts += FPS_STEP_MS;
+            }
+            for (int rep = 0; rep < 3; rep++) {
+                for (int i = 1; i <= 8; i++) {
+                    float t = i / 8f;
+                    counter.process(squeeze(pushUp(ts, 155f - 63f * t, 0f, false, 0.13f * t), kx));
+                    ts += FPS_STEP_MS;
+                }
+                for (int i = 1; i <= 8; i++) {
+                    float t = i / 8f;
+                    counter.process(squeeze(pushUp(ts, 92f + 63f * t, 0f, false, 0.13f * (1f - t)), kx));
+                    ts += FPS_STEP_MS;
+                }
+            }
+            for (int i = 0; i < 5; i++) {
+                counter.process(squeeze(pushUp(ts, 155f, 0f, false, 0f), kx));
+                ts += FPS_STEP_MS;
+            }
+            assertEquals("kx=" + kx + " good=" + counter.getGoodReps(),
+                    3, counter.getGoodReps());
+            assertEquals(0, counter.getBadReps());
+        }
+    }
+
+    // ---------------- 走 / 跑分类 ----------------
+
+    @Test
+    public void classifiesWalkAndRun() {
+        assertEquals("WALK", feedGait(660f, 0f).getGait());     // ~91 步/分
+        assertEquals("WALK", feedGait(500f, 0f).getGait());     // ~120 步/分
+        assertEquals("RUN", feedGait(375f, 0f).getGait());      // ~160 步/分
+        assertEquals("RUN", feedGait(444f, 0.06f).getGait());   // ~135 步/分 + 躯干起伏 → 跑
+        assertEquals("WALK", feedGait(444f, 0f).getGait());     // ~135 步/分 无起伏 → 走
+        assertEquals("UNKNOWN", new RunStepCounter(null).getGait());
+    }
+
+    private static RunStepCounter feedGait(float cadenceMs, float hipBob) {
+        RunStepCounter counter = new RunStepCounter(null);
+        long ts = 0;
+        int perSide = 4;
+        for (int cycle = 0; cycle < 6; cycle++) {
+            for (int i = 0; i < perSide; i++) {
+                float bob = (cycle + i) % 2 == 0 ? hipBob : 0f;
+                counter.process(running(ts, 0.10f, 0f, bob));
+                ts += (long) (cadenceMs / perSide);
+            }
+            for (int i = 0; i < perSide; i++) {
+                float bob = (cycle + i) % 2 == 0 ? hipBob : 0f;
+                counter.process(running(ts, 0f, 0.10f, bob));
+                ts += (long) (cadenceMs / perSide);
+            }
+        }
+        return counter;
     }
 
     // ---------------- 倒立 ----------------

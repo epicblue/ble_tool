@@ -11,8 +11,11 @@ import java.util.Locale;
  *
  * <p>判定：站立（膝角接近伸直）→ 下蹲（膝角变小、髋部下降）→ 起立 计一次。</p>
  * <ul>
- *     <li>深度用膝角（髋-膝-踝），{@link #DEPTH_ANGLE} 以下算到位（约大腿平行地面）；</li>
- *     <li>同时要求髋部明显下降：髋部相对站立时的下降量 ≥ {@link #MIN_HIP_TRAVEL} × 躯干长度，
+ *     <li>深度取两路信号里更深的那个：膝角（髋-膝-踝）≤ {@link #DEPTH_ANGLE}（约大腿平行地面），
+ *     <b>或者</b>髋部相对站立位的下降量 ≥ {@link #HIP_TRAVEL_DEEP} × 躯干长度。
+ *     正对/斜对镜头时膝角在图像上被透视压扁（实测 41° 斜对时 92° 的到位角被读成 125°），
+ *     只靠膝角会整组漏计，所以两路互相兜底；</li>
+ *     <li>至少要求髋部真的动了：下降量 ≥ {@link #MIN_HIP_TRAVEL} × 躯干长度，
  *     避免只弯膝不下蹲被误计；</li>
  *     <li>身体过度前倾（躯干与竖直夹角 &gt; {@link #MAX_TORSO_LEAN}）记为不标准；</li>
  *     <li>只适用于站立姿态（髋在肩下方、脚在髋下方），俯卧/倒立时不计。</li>
@@ -30,6 +33,10 @@ public class SquatCounter implements RepAnalyzer {
     private static final float START_DOWN_ANGLE = 140f;
     /** 髋部最小下降量（×躯干长度），防止"抖膝"被计数。 */
     private static final float MIN_HIP_TRAVEL = 0.12f;
+    /** 髋部下移 ≥ 该比例（×躯干长度）视为蹲到位：正对/斜对镜头时膝角被透视压扁，主要靠它。 */
+    private static final float HIP_TRAVEL_DEEP = 0.35f;
+    /** 髋部下移 ≥ 该比例视为"明显下蹲但不到位"。 */
+    private static final float HIP_TRAVEL_PARTIAL = 0.18f;
     /** 躯干前倾上限（度）。 */
     private static final float MAX_TORSO_LEAN = 55f;
     /** 一次动作最短时长。 */
@@ -185,8 +192,10 @@ public class SquatCounter implements RepAnalyzer {
             return;
         }
 
-        boolean deepEnough = minKnee <= DEPTH_ANGLE;
-        boolean clearlyMoved = minKnee <= PARTIAL_ANGLE;
+        // 膝角在侧对镜头时最准；髋部下移沿重力方向量，正对/斜对镜头都不受影响，
+        // 两者都是"深度的下限估计"，取较大者可以覆盖不同机位。
+        boolean deepEnough = minKnee <= DEPTH_ANGLE || travel >= HIP_TRAVEL_DEEP;
+        boolean clearlyMoved = minKnee <= PARTIAL_ANGLE || travel >= HIP_TRAVEL_PARTIAL;
         boolean hipMoved = travel >= MIN_HIP_TRAVEL;
         boolean leanOk = maxLean <= MAX_TORSO_LEAN;
 
@@ -229,7 +238,7 @@ public class SquatCounter implements RepAnalyzer {
         if (travel < MIN_HIP_TRAVEL) {
             return "臀部再往下坐一些";
         }
-        if (minKnee > DEPTH_ANGLE) {
+        if (minKnee > DEPTH_ANGLE && travel < HIP_TRAVEL_DEEP) {
             return "再蹲深一点";
         }
         return "";

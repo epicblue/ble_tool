@@ -84,6 +84,10 @@ class BM:
         self.ankle_y = float('nan')
         self.body_scale = 0.04
         self.has_ankle = False
+        # 下面两个比例量只用于诊断（实验输出），判定逻辑没有采用它们：
+        # 镜头偏转时 |肩-腕| 在图像上反而变大，方向与"被压扁"相反，见 docs/algorithm-plan.md ③
+        self.arm_ratio = float('nan')   # |肩中-腕中| / 躯干长度
+        self.leg_ratio = float('nan')   # |髋中-踝中| / 躯干长度
         self.sx = self.sy = self.hx = self.hy = 0.0
 
 
@@ -120,6 +124,10 @@ def body_metrics(f):
         m.ankle_y = float('nan')
     wx = mid_of(f, LW, RW, X); wy = mid_of(f, LW, RW, Y)
     m.wrist_drop = (wy - sy) / m.body_scale if wy is not None else float('nan')
+    if wx is not None:
+        m.arm_ratio = dist((sx, sy), (wx, wy)) / m.body_scale
+    if m.has_ankle:
+        m.leg_ratio = dist((hx, hy), (ax, ay)) / m.body_scale
     m.valid = True
     return m
 
@@ -128,6 +136,60 @@ def torso_horizontal(m):
     dx = abs(m.sx - m.hx); dy = abs(m.sy - m.hy)
     vertical = math.degrees(math.atan2(dx, dy + 1e-5))
     return 90 - vertical
+
+
+
+# ---------------- 计时时钟：只累计"合格帧之间"的时间 ----------------
+class HoldClock:
+    """宽限期内的中断不再计入成绩。
+
+    Java 对应 `analysis/HoldClock.java`。语义：
+    - begin()：本组开始（含 ARM 起算窗口），把起算窗口算作有效时间；
+    - accept()：本帧合格。只有在**上一帧也合格**时，才把两帧之间的时间计入；
+    - invalidate()：本帧不合格（含识别失败），下一帧即使合格也不会把这段空白计入。
+    """
+
+    def __init__(self):
+        self.active = False
+        self.start = None
+        self.valid = 0
+        self.last_accepted = None
+        self.prev_good = False
+
+    def begin(self, now):
+        self.active = True
+        self.start = now
+        self.valid = 0
+        self.last_accepted = now
+        self.prev_good = True
+
+    def accept(self, now):
+        if not self.active:
+            return
+        if self.prev_good and self.last_accepted is not None:
+            self.valid += max(0, now - self.last_accepted)
+        self.last_accepted = now
+        self.prev_good = True
+
+    def invalidate(self):
+        self.prev_good = False
+
+    def end(self):
+        self.active = False
+        self.start = None
+        self.last_accepted = None
+        self.prev_good = False
+
+    def valid_ms(self):
+        return self.valid
+
+    def wall_ms(self, now):
+        if not self.active or self.start is None:
+            return self.valid
+        return max(0, now - self.start)
+
+    def interrupt_ms(self, now):
+        return max(0, self.wall_ms(now) - self.valid)
 
 
 # ---------------- PushUpCounter ----------------
@@ -172,9 +234,14 @@ class PushUp:
             self.top_drop = m.wrist_drop if math.isnan(self.top_drop) else max(self.top_drop, m.wrist_drop)
         depth_by_angle = float('nan') if math.isnan(elbow) else clamp((self.TOP - elbow) / (self.TOP - self.depth_angle()), 0, 1.25)
         depth_by_drop = self.drop_depth(m.wrist_drop)
-        depth = depth_by_angle
-        if not math.isnan(depth_by_drop):
-            depth = depth_by_drop if math.isnan(depth_by_angle) else max(depth_by_angle, depth_by_drop)
+        # 两个深度信号都是"镜头斜对时的下限"：关节角被透视缩短会低估，
+        # 手腕位移是沿重力方向量的、与横向透视无关，因此直接取两者较大值。
+        if math.isnan(depth_by_angle):
+            depth = depth_by_drop
+        elif math.isnan(depth_by_drop):
+            depth = depth_by_angle
+        else:
+            depth = max(depth_by_angle, depth_by_drop)
         if math.isnan(depth):
             self.status = 'arms missing'; return
         self.sm_depth = depth if math.isnan(self.sm_depth) else self.sm_depth + self.SMOOTH * (depth - self.sm_depth)
@@ -268,20 +335,46 @@ def angle(f, a, b, c):
     return math.degrees(math.acos(cos))
 
 
+CONF_GAP = 0.25        # 两侧置信度差超过它，只信更可信的一侧
+DISAGREE_ANGLE = 35.0  # 两侧角度差超过它，视为一侧关键点被污染
+
+
+def _min_conf(f, a, b, c):
+    return min(f.conf(a), f.conf(b), f.conf(c))
+
+
 def avg_angle(f, aL, bL, cL, aR, bR, cR):
+    """左右两侧融合（Java: PoseMath.averageAngle）。
+
+    两侧都可信时：
+    1. 置信度差 > CONF_GAP → 只取高的一侧；
+    2. 角度差 > DISAGREE_ANGLE → 只取置信度高的一侧（单侧关键点被污染）；
+    3. 其余按置信度加权。
+    """
     l = angle(f, aL, bL, cL); r = angle(f, aR, bR, cR)
     hl = not math.isnan(l); hr = not math.isnan(r)
-    if hl and hr: return (l + r) / 2
-    return l if hl else r
+    if not (hl and hr):
+        return l if hl else r
+    cl = _min_conf(f, aL, bL, cL); cr = _min_conf(f, aR, bR, cR)
+    if abs(cl - cr) > CONF_GAP:
+        return l if cl > cr else r
+    if abs(l - r) > DISAGREE_ANGLE:
+        return l if cl >= cr else r
+    if cl + cr <= 0:
+        return (l + r) / 2
+    return (l * cl + r * cr) / (cl + cr)
 
 
 # ---------------- 合成数据 ----------------
-def pushup(ts, elbow_deg, sag=0.0, kneel=False):
-    sx, sy, wx, wy = 0.40, 0.55, 0.40, 0.75
+def pushup(ts, elbow_deg, sag=0.0, kneel=False, chest_drop=0.0):
+    """侧视角度俯卧撑。chest_drop>0 时整个身体随动作下沉（手/脚不动），
+    这样"手腕-肩"的垂直距离会变化，用来验证正对/斜对镜头时的位移判据。"""
+    sx, sy, wx, wy = 0.40, 0.55 + chest_drop, 0.40, 0.75
     half = (wy - sy) / 2
     h = half / math.tan(math.radians(elbow_deg) / 2)
     ex, ey = sx + h, (sy + wy) / 2
-    hip_y = 0.55 + sag; ankle_y = 0.55
+    # 身体绕脚踝转动：肩下沉 chest_drop，髋只下沉一半，保持肩-髋-踝近似一条直线
+    hip_y = 0.55 + sag + chest_drop * 0.5; ankle_y = 0.55
     knee = (0.68, 0.62) if kneel else (0.70, 0.55)
     ankle = (0.78, 0.55) if kneel else (0.80, 0.55)
     pts = {NOSE: (0.34, 0.52, 0, 0.9)}
@@ -308,16 +401,18 @@ def standing(ts):
 
 
 def squat(ts, knee_deg, hip_drop):
-    shoulder_y = 0.22; hip_y = 0.42 + hip_drop * 0.25; ankle_y = 0.82
+    """侧视/正视深蹲。hip_drop∈[0,1] 表示下蹲程度；躯干长度固定（肩随髋一起下沉）。"""
+    hip_y = 0.42 + hip_drop * 0.25; ankle_y = 0.82
+    shoulder_y = hip_y - 0.20          # 躯干长度恒定 0.20（真实下蹲时肩会跟着下沉）
     half_h = (ankle_y - hip_y) / 2
     half = math.radians(clamp(knee_deg, 10, 178) / 2)
     fwd = half_h * math.tan(math.pi / 2 - half)
     knee_y = (hip_y + ankle_y) / 2
-    pts = {NOSE: (0.45, 0.15, 0, 0.9)}
+    pts = {NOSE: (0.45, shoulder_y - 0.07, 0, 0.9)}
     for idx in ((LS, LE, LW, LH, LK, LA), (RS, RE, RW, RH, RK, RA)):
         pts[idx[0]] = (0.45, shoulder_y, 0, 0.9)
-        pts[idx[1]] = (0.45, 0.32, 0, 0.9)
-        pts[idx[2]] = (0.45, 0.40, 0, 0.9)
+        pts[idx[1]] = (0.45, shoulder_y + 0.10, 0, 0.9)
+        pts[idx[2]] = (0.45, shoulder_y + 0.18, 0, 0.9)
         pts[idx[3]] = (0.45, hip_y, 0, 0.9)
         pts[idx[4]] = (0.45 + fwd, knee_y, 0, 0.9)
         pts[idx[5]] = (0.45, ankle_y, 0, 0.9)
@@ -384,6 +479,8 @@ def rep_profile(bottom, top, per_half=8):
 class Squat:
     DEPTH = 100.0; PARTIAL = 125.0; STAND = 155.0; START = 140.0
     MIN_TRAVEL = 0.12; MAX_LEAN = 55.0; MIN_REP = 320; DROPOUT = 500; SMOOTH = 0.5
+    HIP_TRAVEL_DEEP = 0.35         # 髋部下移 ≥0.35×躯干 = 蹲到位（正对镜头时的主要判据）
+    HIP_TRAVEL_PARTIAL = 0.18      # 明显下蹲但不到位
 
     def __init__(self):
         self.sm_knee = float('nan'); self.sm_hip = float('nan'); self.stand_hip = float('nan')
@@ -434,8 +531,9 @@ class Squat:
         self.down = False; self.rep_min_knee = float('nan'); self.rep_max_lean = 0.0; self.rep_max_travel = 0.0
         if dur < self.MIN_REP:
             return
-        deep = mk <= self.DEPTH
-        moved = mk <= self.PARTIAL
+        # 膝角（侧对最准）+ 髋部下移比例（正对/斜对都可靠），取较大者
+        deep = (mk <= self.DEPTH) or (tr >= self.HIP_TRAVEL_DEEP)
+        moved = (mk <= self.PARTIAL) or (tr >= self.HIP_TRAVEL_PARTIAL)
         hip_moved = tr >= self.MIN_TRAVEL
         lean_ok = ml <= self.MAX_LEAN
         if not hip_moved:
@@ -512,16 +610,18 @@ class Plank:
         self.hold_start = None; self.cand = None; self.last_good = None; self.last_valid = None
         self.cur = 0; self.best = 0; self.total = 0; self.attempts = 0
         self.sag_frames = 0; self.good_frames = 0; self.sag_warn = 0; self.status = ''
+        self.clock = HoldClock()
 
     def process(self, f):
         now = f.ts
         if not f.visible():
+            self.clock.invalidate()
             if self.last_valid is not None and now - self.last_valid > self.DROPOUT:
                 self.interrupt(now)
             return
         m = body_metrics(f)
         if not m.valid:
-            self.interrupt(now); return
+            self.clock.invalidate(); self.interrupt(now); return
         self.last_valid = now
         th = torso_horizontal(m)
         prone = (not math.isnan(th)) and th < self.MAX_TORSO_H
@@ -534,6 +634,7 @@ class Plank:
                 self.sag_warn += 1
             self.status = 'sagging'
             self.cand = None
+            self.clock.invalidate()
             if self.hold_start is not None:
                 if self.last_good is not None and now - self.last_good <= self.GRACE:
                     pass
@@ -547,13 +648,17 @@ class Plank:
                     self.cand = now
                 if now - self.cand >= self.ARM:
                     self.hold_start = self.cand; self.attempts += 1
+                    self.clock.begin(self.hold_start)
+                    self.clock.accept(now)
                 self.status = 'arming'
             else:
-                self.cur = now - self.hold_start; self.last_good = now
+                self.clock.accept(now)
+                self.cur = self.clock.valid_ms(); self.last_good = now
                 self.good_frames += 1; self.status = 'holding'
             return
         self.status = 'bad'
         self.cand = None
+        self.clock.invalidate()
         if self.hold_start is not None:
             if self.last_good is not None and now - self.last_good <= self.GRACE:
                 self.status += ' (grace)'
@@ -562,21 +667,24 @@ class Plank:
 
     def interrupt(self, now):
         self.cand = None
+        self.clock.invalidate()
         if self.hold_start is not None and (self.last_good is None or now - self.last_good > self.GRACE):
             self.finish()
 
     def finish(self):
-        base = self.last_good if self.last_good is not None else self.hold_start
-        dur = max(0, base - self.hold_start)
+        dur = self.clock.valid_ms()
         if dur > 0:
             self.best = max(self.best, dur); self.total += dur; self.cur = dur
         self.hold_start = None; self.last_good = None; self.cand = None
+        self.clock.end()
 
     def current(self):
         if self.hold_start is None:
             return 0
-        base = self.last_good if self.last_good is not None else self.hold_start
-        return max(self.cur, base - self.hold_start)
+        return self.clock.valid_ms()
+
+    def interrupted_ms(self, now):
+        return self.clock.interrupt_ms(now)
 
     def best_ms(self):
         return max(self.best, self.current())
@@ -592,16 +700,19 @@ class Handstand:
         self.hip = []; self.ankle = []; self.scale = []
         self.hold_start = None; self.cand = None; self.last_good = None
         self.best = 0; self.total = 0; self.attempts = 0; self.cur = 0
+        self.clock = HoldClock()
         self.wall_frames = 0; self.hold_frames = 0; self.tilt_sum = 0.0
 
     def process(self, f):
         now = f.ts
         if not f.visible():
+            self.clock.invalidate()
             if self.hold_start is not None and self.last_good is not None and now - self.last_good > self.GRACE:
                 self.finish()
             return
         m = body_metrics(f)
         if not m.valid:
+            self.clock.invalidate()
             return
         inverted = m.sy > m.hy + 0.02
         ankle_y = m.ankle_y if m.has_ankle else None
@@ -632,27 +743,32 @@ class Handstand:
                     self.cand = now
                 if now - self.cand >= self.ARM:
                     self.hold_start = self.cand; self.attempts += 1
+                    self.clock.begin(self.hold_start)
+                    self.clock.accept(now)
             else:
-                self.cur = now - self.hold_start; self.last_good = now
+                self.clock.accept(now)
+                self.cur = self.clock.valid_ms(); self.last_good = now
                 self.hold_frames += 1; self.tilt_sum += tilt
         else:
             self.cand = None
+            self.clock.invalidate()
             if self.hold_start is not None:
-                if now - self.last_good <= self.GRACE:
-                    self.cur = self.last_good - self.hold_start
+                if self.last_good is not None and now - self.last_good <= self.GRACE:
+                    self.cur = self.clock.valid_ms()
                 else:
                     self.finish()
 
     def finish(self):
-        dur = max(0, self.last_good - self.hold_start)
+        dur = self.clock.valid_ms()
         if dur > 0:
             self.best = max(self.best, dur); self.total += dur; self.cur = dur
         self.hold_start = None; self.last_good = None; self.cand = None
+        self.clock.end()
 
     def current(self):
         if self.hold_start is None:
             return 0
-        return max(self.cur, self.last_good - self.hold_start)
+        return self.clock.valid_ms()
 
     def best_ms(self):
         return max(self.best, self.current())
@@ -681,20 +797,21 @@ class WallSit:
         self.cur = 0; self.best = 0; self.total = 0; self.attempts = 0
         self.good_frames = 0; self.bad_frames = 0; self.knee_sum = 0.0; self.knee_sq = 0.0
         self.status = ''; self.last_knee = float('nan')
+        self.clock = HoldClock()
 
     def process(self, f):
         now = f.ts
         if not f.visible():
-            self.interrupt(now); self.status = 'no person'; return
+            self.clock.invalidate(); self.interrupt(now); self.status = 'no person'; return
         m = body_metrics(f)
         if not m.valid:
-            self.interrupt(now); self.status = 'no body'; return
+            self.clock.invalidate(); self.interrupt(now); self.status = 'no body'; return
         self.last_valid = now
 
         knee = avg_angle(f, LH, LK, LA, RH, RK, RA)
         self.last_knee = knee
         if math.isnan(knee):
-            self.status = 'legs missing'; self.interrupt(now); return
+            self.status = 'legs missing'; self.clock.invalidate(); self.interrupt(now); return
 
         hip_below_shoulder = m.hy > m.sy + 0.02
         ankle_below_knee = m.has_ankle and m.ankle_y > (m.hy + m.ankle_y) / 2 - 0.05
@@ -710,15 +827,19 @@ class WallSit:
                     self.cand = now
                 if now - self.cand >= self.ARM:
                     self.hold_start = self.cand; self.attempts += 1
+                    self.clock.begin(self.hold_start)
+                    self.clock.accept(now)
                 self.status = 'arming'
             else:
-                self.cur = now - self.hold_start; self.last_good = now
+                self.clock.accept(now)
+                self.cur = self.clock.valid_ms(); self.last_good = now
                 self.good_frames += 1; self.knee_sum += knee; self.knee_sq += knee * knee
                 self.status = 'holding'
             return
 
         # 不合格帧
         self.cand = None
+        self.clock.invalidate()
         if knee > self.MAX_KNEE:
             self.status = 'stood up'
         elif thigh_rise > self.MAX_THIGH_RISE:
@@ -736,19 +857,24 @@ class WallSit:
 
     def interrupt(self, now):
         self.cand = None
+        self.clock.invalidate()
         if self.hold_start is not None and (self.last_good is None or now - self.last_good > self.DROPOUT):
             self.finish()
 
     def finish(self):
-        dur = max(0, (self.last_good if self.last_good is not None else self.hold_start) - self.hold_start)
+        dur = self.clock.valid_ms()
         if dur > 0:
             self.best = max(self.best, dur); self.total += dur; self.cur = dur
         self.hold_start = None; self.last_good = None; self.cand = None
+        self.clock.end()
 
     def current(self):
         if self.hold_start is None:
             return 0
-        return max(self.cur, (self.last_good if self.last_good is not None else self.hold_start) - self.hold_start)
+        return self.clock.valid_ms()
+
+    def interrupted_ms(self, now):
+        return self.clock.interrupt_ms(now)
 
     def best_ms(self):
         return max(self.best, self.current())
@@ -771,6 +897,10 @@ class RunSteps:
     DROPOUT_MS = 700
 
     MIN_STABLE = 2
+    RUN_CADENCE = 150.0     # 步频 ≥150 直接判跑步
+    WALK_CADENCE = 120.0    # 步频 ≤120 直接判走路
+    HIP_BOB_RUN = 0.05      # 中间的模糊区间，用髋部上下起伏（×躯干）区分
+    BOB_WINDOW = 20         # 起伏统计窗口（帧）
 
     def __init__(self):
         self.steps = 0
@@ -782,6 +912,8 @@ class RunSteps:
         self.last_valid = None
         self.status = ''
         self.max_signal = 0.0
+        self.hip_hist = []
+        self.last_scale = 0.04
 
     def process(self, f):
         now = f.ts
@@ -805,6 +937,10 @@ class RunSteps:
             return
 
         scale = max(0.04, m.body_scale)
+        self.last_scale = scale
+        self.hip_hist.append(m.hy)
+        if len(self.hip_hist) > self.BOB_WINDOW:
+            self.hip_hist.pop(0)
         signal = (f.y(RA) - f.y(LA)) / scale   # >0 表示左脚更高
         self.max_signal = max(self.max_signal, abs(signal))
 
@@ -842,6 +978,28 @@ class RunSteps:
         self.last_sign = sign
         self.status = 'running'
 
+    def hip_bob(self):
+        """躯干上下起伏（峰峰值 / 躯干长度）；数据不足返回 NaN。"""
+        if len(self.hip_hist) < 4:
+            return float('nan')
+        return (max(self.hip_hist) - min(self.hip_hist)) / max(0.04, self.last_scale)
+
+    def gait(self):
+        """走 / 跑分类：步频为主，模糊区间用躯干起伏。"""
+        if self.steps < 2:
+            return 'UNKNOWN'
+        c = self.cadence()
+        if c <= 0:
+            return 'UNKNOWN'
+        if c >= self.RUN_CADENCE:
+            return 'RUN'
+        if c <= self.WALK_CADENCE:
+            return 'WALK'
+        bob = self.hip_bob()
+        if math.isnan(bob):
+            return 'RUN' if c >= (self.RUN_CADENCE + self.WALK_CADENCE) / 2 else 'WALK'
+        return 'RUN' if bob >= self.HIP_BOB_RUN else 'WALK'
+
     def cadence(self):
         if not self.intervals:
             return 0
@@ -855,9 +1013,9 @@ res = []
 
 
 # ---------------- 跑步 / 靠墙蹲的合成帧（与 SyntheticPoses.running / wallSit 同构） ----------------
-def running(ts, lift_left=0.0, lift_right=0.0):
-    """左右脚交替抬起；lift 越大该侧脚踝越高。"""
-    hip_y, shoulder_y = 0.50, 0.24
+def running(ts, lift_left=0.0, lift_right=0.0, hip_bob=0.0):
+    """左右脚交替抬起；lift 越大该侧脚踝越高，hip_bob 是躯干上下起伏（跑步比走路大）。"""
+    hip_y, shoulder_y = 0.50 - hip_bob, 0.24 - hip_bob
     pts = {NOSE: (0.5, shoulder_y - 0.06, 0, 0.9)}
     for base_idx, lift in (((LS, LE, LW, LH, LK, LA), lift_left),
                            ((RS, RE, RW, RH, RK, RA), lift_right)):
