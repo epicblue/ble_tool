@@ -1,7 +1,12 @@
 package com.zxw.fitness.ui;
 
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.ActivityNotFoundException;
+import android.content.DialogInterface;
+import android.content.Intent;
 import android.media.MediaPlayer;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -14,10 +19,12 @@ import android.widget.Toast;
 import androidx.core.content.ContextCompat;
 
 import com.zxw.R;
+import com.zxw.fitness.analysis.HoldScore;
 import com.zxw.fitness.analysis.ReplayTimeline;
 import com.zxw.fitness.camera.SkeletonOverlay;
 import com.zxw.fitness.data.PoseLog;
 import com.zxw.fitness.data.SessionStore;
+import com.zxw.fitness.data.VideoExporter;
 import com.zxw.fitness.model.ExerciseType;
 import com.zxw.fitness.model.PoseFrame;
 import com.zxw.fitness.model.Session;
@@ -36,11 +43,16 @@ import java.util.Locale;
  * <p>骨架数据与视频的播放进度同步；拖动进度条、倍速播放都会重新计算当时的计数/计时，
  * 按当前版本判定；算法升级后旧记录的结果可能不同。</p>
  */
-public class ReplayActivity extends Activity {
+public class ReplayActivity extends Activity implements VideoExporter.Listener {
 
     public static final String EXTRA_SESSION_ID = "session_id";
     public static final String EXTRA_USER_ID = "user_id";
 
+    private static final int REQ_EXPORT_VIDEO = 202;
+    private static final String STATE_SESSION_ID = "replay_session_id";
+    private static final String STATE_EXPORT_USER = "export_user";
+    private static final String STATE_EXPORT_SESSION = "export_session";
+    private static final String STATE_EXPORT_FILE = "export_video_file";
     private static final float[] SPEEDS = {1f, 0.5f, 1.5f, 2f};
     private static final long TICK_MS = 50;
 
@@ -62,7 +74,9 @@ public class ReplayActivity extends Activity {
     private TextView btnNext;
     private TextView tvNoVideo;
     private TextView btnMarkerDetails;
+    private TextView btnExportVideo;
     private TextView tvSceneDiagnosis;
+    private TextView tvRecordedSummary;
 
     private Session session;
     private PoseLog poseLog;
@@ -80,6 +94,10 @@ public class ReplayActivity extends Activity {
     private int speedIndex;
     private boolean showMarkerDetails = true;
     private int lastSceneIndex = -1;
+    // 文件选择器可能使 Activity 重建；固定记录身份与文件名，不能取返回时正在显示的记录。
+    private String pendingExportUser;
+    private long pendingExportSessionId = -1;
+    private String pendingExportFile;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -88,6 +106,12 @@ public class ReplayActivity extends Activity {
         bindViews();
 
         long sessionId = getIntent().getLongExtra(EXTRA_SESSION_ID, -1);
+        if (savedInstanceState != null) {
+            sessionId = savedInstanceState.getLong(STATE_SESSION_ID, sessionId);
+            pendingExportUser = savedInstanceState.getString(STATE_EXPORT_USER);
+            pendingExportSessionId = savedInstanceState.getLong(STATE_EXPORT_SESSION, -1);
+            pendingExportFile = savedInstanceState.getString(STATE_EXPORT_FILE);
+        }
         String userId = getIntent().getStringExtra(EXTRA_USER_ID);
         if (userId == null) {
             Toast.makeText(this, "记录不存在", Toast.LENGTH_SHORT).show();
@@ -137,7 +161,12 @@ public class ReplayActivity extends Activity {
         btnNext = findViewById(R.id.btnNext);
         tvNoVideo = findViewById(R.id.tvNoVideo);
         btnMarkerDetails = findViewById(R.id.btnMarkerDetails);
+        btnExportVideo = findViewById(R.id.btnExportVideo);
         tvSceneDiagnosis = findViewById(R.id.tvSceneDiagnosis);
+        tvRecordedSummary = findViewById(R.id.tvRecordedSummary);
+        btnExportVideo.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { confirmExportVideo(); }
+        });
         btnMarkerDetails.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
                 showMarkerDetails = !showMarkerDetails;
@@ -242,10 +271,21 @@ public class ReplayActivity extends Activity {
                 ? ("hands".equals(session.getVariant()) ? " · 手撑凳" : " · 脚垫凳") : ""));
         String stability = Float.isNaN(session.getStability())
                 ? "" : " · 稳定度 " + Math.round(session.getStability() * 100) + "%";
+        String scoreLabel = type == ExerciseType.WALL_SIT ? " · 最长 " : " · 成绩 ";
         tvSubtitle.setText(TimeUtils.formatFriendly(session.getStartedAt())
-                + " · 成绩 " + resultText(session) + stability
+                + scoreLabel + session.getResultText() + stability
                 + (session.hasPersonalCalibration() ? " · 个人目标" : ""));
-        tvUnit.setText(type.getUnitLabel());
+        if (type == ExerciseType.WALL_SIT) {
+            boolean canShowTotal = timeline != null || session.hasTotalHoldMs();
+            tvUnit.setText(canShowTotal ? HoldScore.unitLabel(type) : "秒（最长）");
+            tvRecordedSummary.setVisibility(View.VISIBLE);
+            tvRecordedSummary.setText("保存：" + session.getResultSummary()
+                    + (timeline != null ? " · 回放按当前算法重算" : ""));
+        } else {
+            tvUnit.setText(type.getUnitLabel());
+            tvRecordedSummary.setVisibility(View.GONE);
+        }
+        updateExportButton();
 
         btnPrev.setVisibility(playlistIndex > 0 ? View.VISIBLE : View.GONE);
         btnNext.setVisibility(playlistIndex < playlist.size() - 1 ? View.VISIBLE : View.GONE);
@@ -313,10 +353,6 @@ public class ReplayActivity extends Activity {
         updatePlayButton();
         render(0);
         handler.post(tick);
-    }
-
-    private String resultText(Session s) {
-        return s.getResultText();
     }
 
     private final Runnable tick = new Runnable() {
@@ -400,12 +436,16 @@ public class ReplayActivity extends Activity {
             }
             tvStatus.setText(timeline.getStatusAt(index) + counts);
         } else {
-            // 没有骨架数据时，只展示本次最终成绩
+            // 旧记录没有累计字段；无骨架时只能显示已保存的最长单组。
+            long savedHold = type == ExerciseType.WALL_SIT && session.hasTotalHoldMs()
+                    ? session.getTotalHoldMs() : session.getHoldMs();
             tvScore.setText(type.isTimerExercise()
-                    ? String.format(Locale.US, "%.1f", session.getHoldMs() / 1000.0)
+                    ? String.format(Locale.US, "%.1f", savedHold / 1000.0)
                     : String.valueOf(type == ExerciseType.BAD_PUSHUP
                     ? session.getBadReps() : session.getReps()));
-            tvStatus.setText("没有骨架数据，仅显示最终成绩");
+            tvStatus.setText(type == ExerciseType.WALL_SIT
+                    ? (session.hasTotalHoldMs() ? "无骨架，显示保存的累计" : "旧记录未保存累计，仅显示最长单组")
+                    : "没有骨架数据，仅显示最终成绩");
         }
     }
 
@@ -453,6 +493,142 @@ public class ReplayActivity extends Activity {
 
     private void updatePlayButton() {
         btnPlay.setText(playing ? "⏸  暂停" : "▶  播放");
+    }
+
+    private void updateExportButton() {
+        if (btnExportVideo == null) return;
+        File source = session == null ? null : SessionStore.resolveMedia(this,
+                session.getUserId(), session.getVideoFile());
+        boolean available = source != null && source.isFile() && source.length() > 0;
+        boolean busy = VideoExporter.isRunning();
+        btnExportVideo.setText(busy ? "导出中" : available ? "导出视频" : "无视频");
+        btnExportVideo.setEnabled(available && !busy);
+        btnExportVideo.setAlpha(available && !busy ? 1f : 0.55f);
+    }
+
+    private void confirmExportVideo() {
+        final Session chosen = session;
+        if (chosen == null) return;
+        if (VideoExporter.isRunning()) {
+            updateExportButton();
+            Toast.makeText(this, "已有视频正在导出", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        File source = SessionStore.resolveMedia(this, chosen.getUserId(), chosen.getVideoFile());
+        if (source == null || !source.isFile() || source.length() <= 0) {
+            updateExportButton();
+            Toast.makeText(this, "本记录没有可导出的视频", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_DARK)
+                .setTitle("导出原视频")
+                .setMessage("保存摄像头录制的原始 MP4。骨架、关键点标记和成绩是回放时叠加的，不会包含在导出文件中。\n\n请选择保存位置，并等待导出完成；原记录不会被删除。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("选择位置", new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface dialog, int which) {
+                        launchVideoDestination(chosen);
+                    }
+                }).show();
+    }
+
+    private void launchVideoDestination(Session chosen) {
+        if (VideoExporter.isRunning()) {
+            Toast.makeText(this, "已有视频正在导出", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        pendingExportUser = chosen.getUserId();
+        pendingExportSessionId = chosen.getId();
+        pendingExportFile = chosen.getVideoFile();
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("video/mp4");
+        intent.putExtra(Intent.EXTRA_TITLE, "fitness_" + chosen.getExerciseType().getKey()
+                + "_" + chosen.getId() + ".mp4");
+        try {
+            startActivityForResult(intent, REQ_EXPORT_VIDEO);
+        } catch (ActivityNotFoundException | SecurityException e) {
+            clearPendingExport();
+            Toast.makeText(this, "无法打开系统文件选择器，请启用文件管理器后重试", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void clearPendingExport() {
+        pendingExportUser = null;
+        pendingExportSessionId = -1;
+        pendingExportFile = null;
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQ_EXPORT_VIDEO) return;
+        String userId = pendingExportUser;
+        long sessionId = pendingExportSessionId;
+        String videoName = pendingExportFile;
+        clearPendingExport();
+        if (resultCode != RESULT_OK) {
+            Toast.makeText(this, "已取消导出", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Uri destination = data == null ? null : data.getData();
+        if (destination == null || !"content".equals(destination.getScheme())) {
+            Toast.makeText(this, "未获取到有效的保存位置，请重试", Toast.LENGTH_LONG).show();
+            return;
+        }
+        Session selected = null;
+        if (userId != null && sessionId >= 0 && videoName != null) {
+            for (Session item : SessionStore.loadAll(this, userId)) {
+                if (item.getId() == sessionId && userId.equals(item.getUserId())
+                        && videoName.equals(item.getVideoFile())) {
+                    selected = item;
+                    break;
+                }
+            }
+        }
+        File source = selected == null ? null : SessionStore.resolveMedia(this, userId, videoName);
+        if (source == null || !source.isFile() || source.length() <= 0) {
+            Toast.makeText(this, "原记录或视频已不存在；请检查所选位置是否留下空文件",
+                    Toast.LENGTH_LONG).show();
+            updateExportButton();
+            return;
+        }
+        if (VideoExporter.start(getApplicationContext(), source, destination)) {
+            updateExportButton();
+            Toast.makeText(this, "正在导出，请等待完成提示", Toast.LENGTH_SHORT).show();
+        } else {
+            Toast.makeText(this, "无法启动导出；所选位置可能留下空文件，请检查后重试",
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    @Override
+    public void onVideoExportFinished(boolean success, String message) {
+        updateExportButton();
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle state) {
+        if (session != null) state.putLong(STATE_SESSION_ID, session.getId());
+        if (pendingExportUser != null) {
+            state.putString(STATE_EXPORT_USER, pendingExportUser);
+            state.putLong(STATE_EXPORT_SESSION, pendingExportSessionId);
+            state.putString(STATE_EXPORT_FILE, pendingExportFile);
+        }
+        super.onSaveInstanceState(state);
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        VideoExporter.attach(this);
+        updateExportButton();
+    }
+
+    @Override
+    protected void onStop() {
+        VideoExporter.detach(this);
+        super.onStop();
     }
 
     @Override

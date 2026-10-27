@@ -222,7 +222,9 @@ public class WorkoutRecorder implements ExerciseAnalyzer, RepListener, HoldListe
             session.setBadReps(repAnalyzer.getBadReps());
             session.setFormErrors(repAnalyzer.getFormErrors());
         } else if (holdAnalyzer != null) {
+            // holdMs 仍表示最长单组，兼容旧记录和历史最佳统计。
             session.setHoldMs(holdAnalyzer.getBestHoldMs());
+            session.setTotalHoldMs(holdAnalyzer.getTotalHoldMs());
             session.setFormErrors(0);
             if (session.getExerciseType() == ExerciseType.WALL_HANDSTAND) {
                 float wallRatio = holdAnalyzer instanceof HandstandTimer

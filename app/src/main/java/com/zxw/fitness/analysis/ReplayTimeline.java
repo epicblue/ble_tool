@@ -116,11 +116,12 @@ public class ReplayTimeline {
                 status[i] = repAnalyzer.getStatusText();
             } else {
                 gapGuard.process(holdAnalyzer, frame);
-                score[i] = holdAnalyzer.getBestHoldMs() / 1000f;
+                long displayedHoldMs = HoldScore.displayMs(type, holdAnalyzer);
+                score[i] = displayedHoldMs / 1000f;
                 progress[i] = Math.min(1f, holdAnalyzer.getCurrentHoldMs() / 60000f);
                 good[i] = 0;
                 bad[i] = 0;
-                hold[i] = holdAnalyzer.getBestHoldMs();
+                hold[i] = displayedHoldMs;
                 status[i] = holdAnalyzer.getStatusText();
             }
         }
@@ -175,6 +176,7 @@ public class ReplayTimeline {
         return index >= 0 && index < badReps.length ? badReps[index] : 0;
     }
 
+    /** 逐帧展示值：靠墙蹲是累计有效时长，其余计时动作是最长单组。 */
     public long getHoldMsAt(int index) {
         return index >= 0 && index < holdMs.length ? holdMs[index] : 0;
     }

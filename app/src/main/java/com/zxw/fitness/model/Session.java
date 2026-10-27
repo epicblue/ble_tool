@@ -21,6 +21,8 @@ public class Session {
     private int badReps;
     private int formErrors;
     private long holdMs;
+    /** 所有组的有效累计；-1 表示旧记录没有保存此值，不能用最长单组冒充累计。 */
+    private long totalHoldMs = -1;
     private boolean wallContact;
     private String poseFile;
     private String videoFile;
@@ -129,6 +131,19 @@ public class Session {
         this.holdMs = holdMs;
     }
 
+    public boolean hasTotalHoldMs() {
+        return totalHoldMs >= 0;
+    }
+
+    /** 旧记录没有累计时返回 -1，调用方应先检查 hasTotalHoldMs。 */
+    public long getTotalHoldMs() {
+        return totalHoldMs;
+    }
+
+    public void setTotalHoldMs(long totalHoldMs) {
+        this.totalHoldMs = Math.max(-1, totalHoldMs);
+    }
+
     /** 靠墙倒立是否检测到贴墙。 */
     public boolean isWallContact() {
         return wallContact;
@@ -202,7 +217,7 @@ public class Session {
     }
 
     /**
-     * 结果数值：计时类返回秒数；"不标准俯卧撑"返回不标准次数；其余返回有效次数。
+     * 结果数值：计时类返回最长单组秒数；"不标准俯卧撑"返回不标准次数；其余返回有效次数。
      */
     public double getResultValue() {
         ExerciseType type = getExerciseType();
@@ -223,6 +238,18 @@ public class Session {
         }
         int value = type == ExerciseType.BAD_PUSHUP ? badReps : reps;
         return value + " " + type.getUnitLabel();
+    }
+
+    /** 靠墙蹲区分已保存的累计和最长单组；其他动作沿用既有成绩口径。 */
+    public String getResultSummary() {
+        if (getExerciseType() == ExerciseType.WALL_SIT) {
+            if (hasTotalHoldMs()) {
+                return String.format(Locale.US, "累计 %.1f 秒 · 最长单组 %.1f 秒",
+                        totalHoldMs / 1000.0, holdMs / 1000.0);
+            }
+            return "最长单组 " + getResultText() + "（累计未记录）";
+        }
+        return getResultText();
     }
 
     public boolean hasPoseReplay() {

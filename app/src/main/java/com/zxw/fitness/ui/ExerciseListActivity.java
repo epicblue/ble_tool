@@ -180,7 +180,8 @@ public class ExerciseListActivity extends Activity {
             } else {
                 String bestText;
                 if (type.isTimerExercise()) {
-                    bestText = String.format(Locale.US, "最佳 %.1f 秒", s.best);
+                    bestText = String.format(Locale.US,
+                            type == ExerciseType.WALL_SIT ? "最佳单组 %.1f 秒" : "最佳 %.1f 秒", s.best);
                 } else if (type == ExerciseType.BAD_PUSHUP) {
                     bestText = String.format(Locale.US, "最多不标准 %d 次", (int) s.best);
                 } else {

@@ -135,11 +135,16 @@ public class WallSitTimer implements HoldAnalyzer {
                     attempts++;
                     clock.begin(holdStartMs);
                     clock.accept(now);
+                    // 起算帧也是合格帧。否则一开始就抖动时 lastGoodMs 仍为 -1，
+                    // 宽限期会被跳过，刚开始的一组立即结束。
+                    lastGoodMs = now;
+                    statusText = "保持中";
                     if (listener != null) {
                         listener.onHoldStart(attempts);
                     }
+                } else {
+                    statusText = "稳住，马上开始计时";
                 }
-                statusText = "稳住，马上开始计时";
             } else {
                 clock.accept(now);
                 currentHoldMs = clock.getValidMs();
@@ -249,7 +254,7 @@ public class WallSitTimer implements HoldAnalyzer {
 
     @Override
     public String getScoreText() {
-        return formatSeconds(getBestHoldMs());
+        return formatSeconds(getTotalHoldMs());
     }
 
     @Override
@@ -259,9 +264,9 @@ public class WallSitTimer implements HoldAnalyzer {
 
     @Override
     public String getDetailText() {
-        return String.format(Locale.US, "本组 %s · 共 %d 组 · 累计 %s · 稳定度 %d%%",
+        return String.format(Locale.US, "本组 %s · 共 %d 组 · 累计 %s · 最长单组 %s · 稳定度 %d%%",
                 formatSeconds(getCurrentHoldMs()), attempts, formatSeconds(getTotalHoldMs()),
-                (int) (getStability() * 100));
+                formatSeconds(getBestHoldMs()), (int) (getStability() * 100));
     }
 
     @Override

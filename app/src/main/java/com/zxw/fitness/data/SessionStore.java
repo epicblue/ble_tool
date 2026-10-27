@@ -198,6 +198,9 @@ public final class SessionStore {
             o.put("badReps", s.getBadReps());
             o.put("formErrors", s.getFormErrors());
             o.put("holdMs", s.getHoldMs());
+            if (s.hasTotalHoldMs()) {
+                o.put("totalHoldMs", s.getTotalHoldMs());
+            }
             o.put("wallContact", s.isWallContact());
             o.put("poseFile", s.getPoseFile());
             o.put("videoFile", s.getVideoFile());
@@ -238,6 +241,8 @@ public final class SessionStore {
             s.setBadReps(o.optInt("badReps", 0));
             s.setFormErrors(o.optInt("formErrors", 0));
             s.setHoldMs(o.optLong("holdMs", 0));
+            // 旧 JSON 中没有 totalHoldMs；保留 -1，而不是误把最长单组当累计。
+            s.setTotalHoldMs(o.optLong("totalHoldMs", -1));
             s.setWallContact(o.optBoolean("wallContact", false));
             s.setPoseFile(o.optString("poseFile", null));
             s.setVideoFile(o.optString("videoFile", null));

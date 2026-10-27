@@ -236,7 +236,14 @@ public class HistoryActivity extends Activity {
             holder.tvTime.setText(TimeUtils.formatFriendly(session.getStartedAt())
                     + (session.hasPersonalCalibration() ? " · 个人目标" : ""));
 
-            holder.tvResult.setText(session.getResultText());
+            if (type == ExerciseType.WALL_SIT) {
+                holder.tvResult.setText(session.hasTotalHoldMs()
+                        ? String.format(Locale.US, "累计 %.1f 秒\n最长 %.1f 秒",
+                        session.getTotalHoldMs() / 1000.0, session.getHoldMs() / 1000.0)
+                        : "最长 " + session.getResultText());
+            } else {
+                holder.tvResult.setText(session.getResultText());
+            }
 
             boolean hasVideo = false;
             if (session.hasVideoReplay()) {

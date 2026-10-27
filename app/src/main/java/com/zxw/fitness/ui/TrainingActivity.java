@@ -28,6 +28,7 @@ import androidx.lifecycle.LifecycleRegistry;
 import com.zxw.R;
 import com.zxw.fitness.analysis.FrameGapGuard;
 import com.zxw.fitness.analysis.HoldAnalyzer;
+import com.zxw.fitness.analysis.HoldScore;
 import com.zxw.fitness.analysis.RepAnalyzer;
 import com.zxw.fitness.analysis.RepEvent;
 import com.zxw.fitness.analysis.WorkoutRecorder;
@@ -151,7 +152,7 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
 
     private void setupUi() {
         ((TextView) findViewById(R.id.tvTitle)).setText(getTitleText());
-        tvUnit.setText(exerciseType.getUnitLabel());
+        tvUnit.setText(HoldScore.unitLabel(exerciseType));
         tvScore.setText(exerciseType.isTimerExercise() ? "0.0" : "0");
         tvBadge.setVisibility(exerciseType.isTimerExercise() ? View.GONE : View.VISIBLE);
         tvBadge.setText("不标准 0");
@@ -401,10 +402,10 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
             if (hold == null) {
                 return;
             }
-            long best = hold.getBestHoldMs();
+            long displayed = HoldScore.displayMs(exerciseType, hold);
             long current = hold.getCurrentHoldMs();
-            tvScore.setText(String.format(Locale.US, "%.1f", best / 1000.0));
-            tvUnit.setText("秒");
+            tvScore.setText(String.format(Locale.US, "%.1f", displayed / 1000.0));
+            tvUnit.setText(HoldScore.unitLabel(exerciseType));
             int percent = (int) Math.min(100, current * 100 / 60000);
             progress.setProgress(percent);
             String extra = hold.getExtraText();
@@ -562,7 +563,7 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
         resultDialogShown = true;
         final Session saved = session;
         StringBuilder message = new StringBuilder();
-        message.append("结果：").append(saved.getResultText())
+        message.append("结果：").append(saved.getResultSummary())
                 .append(saved.hasPersonalCalibration() ? "（含个人目标计数）" : "").append("\n");
         message.append("用时：").append(TimeUtils.formatDurationCn(saved.getDurationMs())).append("\n");
         if (exerciseType == ExerciseType.RUNNING) {

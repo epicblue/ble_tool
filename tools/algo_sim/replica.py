@@ -1268,7 +1268,10 @@ class WallSit:
                     self.hold_start = self.cand; self.attempts += 1
                     self.clock.begin(self.hold_start)
                     self.clock.accept(now)
-                self.status = 'arming'
+                    self.last_good = now
+                    self.status = 'holding'
+                else:
+                    self.status = 'arming'
             else:
                 self.clock.accept(now)
                 self.cur = self.clock.valid_ms(); self.last_good = now
@@ -1317,6 +1320,9 @@ class WallSit:
 
     def best_ms(self):
         return max(self.best, self.current())
+
+    def total_ms(self):
+        return self.total + self.current()
 
     def stability(self):
         if self.good_frames == 0:

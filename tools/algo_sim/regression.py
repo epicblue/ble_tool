@@ -178,6 +178,59 @@ best = t.best_ms()
 check('timesWallSit', 2400 <= best <= 3200 and t.attempts == 1 and t.stability() > 0.8,
       f'best={best} attempts={t.attempts} stab={t.stability():.2f}')
 
+# 多组时大号成绩应使用累计，不是最长单组：第二组即使短于第一组也必须增加。
+t = WallSit(); ts = 0
+for _ in range(50):
+    t.process(wall_sit(ts, 0.0)); ts += STEP
+first = t.total_ms()
+for _ in range(16):
+    t.process(wall_sit(ts, 0.25)); ts += STEP
+check('wall sit rest preserves total', t.total_ms() == first and t.current() == 0,
+      f'first={first} total={t.total_ms()}')
+second_values = []
+for _ in range(20):
+    t.process(wall_sit(ts, 0.0)); ts += STEP
+    second_values.append(t.total_ms())
+second = t.current()
+check('wall sit shorter second accumulates', t.attempts == 2 and second > 0
+      and second < first and t.best_ms() == first and t.total_ms() == first + second
+      and second_values[-1] > second_values[-5] > first,
+      f'first={first} second={second} best={t.best_ms()} total={t.total_ms()}')
+before_grace = t.total_ms()
+t.process(wall_sit(ts, 0.25)); ts += STEP
+t.process(wall_sit(ts, 0.0)); ts += STEP
+no_gap_added = t.total_ms() == before_grace
+t.process(wall_sit(ts, 0.0)); ts += STEP
+check('wall sit grace skips invalid time', no_gap_added and t.total_ms() == before_grace + STEP
+      and t.attempts == 2)
+for _ in range(16):
+    t.process(wall_sit(ts, 0.25)); ts += STEP
+check('wall sit finish avoids double count', t.total_ms() == before_grace + STEP
+      and t.current() == 0 and t.best_ms() == first)
+
+# 相机中断后恢复时，空白不能被补计到新组。
+t = WallSit(); guard = FrameGapGuard(); ts = 0
+for _ in range(50):
+    guard.process(t, wall_sit(ts, 0.0)); ts += STEP
+first = t.total_ms(); ts += 2000
+guard.process(t, wall_sit(ts, 0.0))
+unchanged = t.total_ms() == first and t.current() == 0
+for _ in range(8):
+    ts += STEP; guard.process(t, wall_sit(ts, 0.0))
+check('wall sit long gap not counted', unchanged and t.attempts == 2
+      and 0 < t.current() <= 8 * STEP and t.total_ms() == first + t.current())
+
+# 刚达到 400ms 起算门槛立即抖动：仍应享有宽限期，不得拆成多组。
+t = WallSit()
+for ts in (0, 100, 200, 300, 400):
+    t.process(wall_sit(ts, 0.0))
+t.process(wall_sit(500, 0.25))
+still_holding = t.current() == 400 and t.attempts == 1
+t.process(wall_sit(600, 0.0)); t.process(wall_sit(700, 0.0))
+check('wall sit grace starts at arming frame', still_holding and t.attempts == 1
+      and t.current() == 500 and t.total_ms() == 500,
+      f'current={t.current()} attempts={t.attempts}')
+
 # ---- wallSitRejectsHighHips ----
 t = WallSit()
 ts = 0
