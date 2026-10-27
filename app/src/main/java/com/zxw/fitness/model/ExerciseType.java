@@ -31,6 +31,21 @@ public enum ExerciseType {
     /** 不标准俯卧撑：统计"不标准次数"（幅度不足、塌腰/撅臀、跪姿等）。 */
     BAD_PUSHUP("bad_pushup", "不标准俯卧撑", "次", Unit.COUNT,
             "身体未保持一条直线（塌腰/撅臀）或下降幅度不足，单独计数提醒纠正。",
+            false, false),
+
+    /** 平板支撑：统计坚持时间，塌腰时不计时。 */
+    PLANK("plank", "平板支撑", "秒", Unit.SECONDS,
+            "小臂撑在肩下、身体肩-髋-踝成一条直线；塌腰或髋部下坠时暂停计时。",
+            true, false),
+
+    /** 深蹲：统计次数，髋部下蹲深度与躯干前倾都参与判定。 */
+    SQUAT("squat", "深蹲", "次", Unit.COUNT,
+            "站直→下蹲（大腿接近水平）→起立；只弯膝不坐髋、或上身前倾过多会记为不标准。",
+            false, false),
+
+    /** 引体向上（实验性）：需要画面同时拍到横杆与双手。 */
+    PULLUP("pullup", "引体向上", "次", Unit.COUNT,
+            "悬垂后拉到下巴接近横杆再放下；需要镜头能拍到双手与全身。",
             false, false);
 
     public enum Unit {

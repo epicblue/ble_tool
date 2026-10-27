@@ -201,6 +201,9 @@ public final class SessionStore {
             o.put("videoFile", s.getVideoFile());
             o.put("thumbFile", s.getThumbFile());
             o.put("note", s.getNote());
+            if (!Float.isNaN(s.getStability())) {
+                o.put("stability", s.getStability());
+            }
         } catch (JSONException ignored) {
             // key 均为字符串，不会抛异常
         }
@@ -225,6 +228,7 @@ public final class SessionStore {
             s.setVideoFile(o.optString("videoFile", null));
             s.setThumbFile(o.optString("thumbFile", null));
             s.setNote(o.optString("note", ""));
+            s.setStability((float) o.optDouble("stability", Double.NaN));
             return s;
         } catch (JSONException e) {
             return null;

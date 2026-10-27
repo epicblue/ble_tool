@@ -2,6 +2,7 @@ package com.zxw.fitness.analysis;
 
 import com.zxw.fitness.model.ExerciseType;
 import com.zxw.fitness.model.PoseFrame;
+import com.zxw.fitness.pose.BodyMetrics;
 import com.zxw.fitness.pose.PoseMath;
 
 import java.util.Locale;
@@ -9,77 +10,70 @@ import java.util.Locale;
 /**
  * 俯卧撑计数器（俯卧撑 / 折凳俯卧撑 / 不标准俯卧撑共用）。
  *
- * <p>判定思路：</p>
- * <ul>
- *     <li>用肩-肘-腕夹角判断"撑起/下放"两个阶段，肘角大于 {@link #TOP_ANGLE} 视为撑起，
- *     下降到 {@link #DEPTH_ANGLE} 以下视为到位。</li>
- *     <li>一次完整的往返计一次：到位且身体保持一条直线 → 有效；幅度不足或塌腰/撅臀、
- *     跪姿 → 记为"不标准"，同时累加姿势问题次数。</li>
- *     <li>只在躯干接近水平、双手低于肩部时计数，避免站着挥动手臂被误识别。</li>
- * </ul>
+ * <p>相比最初的版本，判定做了三点增强：</p>
+ * <ol>
+ *     <li><b>深度用双信号</b>：侧对镜头时用肩-肘-腕夹角；正对/斜对镜头（关节角在图像上被压缩）
+ *     或手臂关键点不可靠时，自动改用"手腕比肩低多少 / 身体尺度"的比例量。
+ *     两者都能用时取更灵敏的那个。</li>
+ *     <li><b>身体直线度用比例量</b>：{@link BodyMetrics#sagRatio}（髋偏离肩-踝连线的距离 / 躯干长度），
+ *     与机位、人体距离无关；关节角只作为侧对镜头时的辅助判据。</li>
+ *     <li><b>抗丢帧</b>：短暂丢失人体（{@link #DROPOUT_MS} 以内）不会打断正在进行的动作，
+ *     避免因一帧识别失败导致漏计。</li>
+ * </ol>
  */
-public class PushUpCounter implements ExerciseAnalyzer {
+public class PushUpCounter implements RepAnalyzer {
 
-    public interface Listener {
-        /** 完成一次动作（无论是否标准）。 */
-        void onRep(RepEvent event);
-    }
-
-    /** 一次动作的结果。 */
-    public static class RepEvent {
-        public final boolean valid;
-        public final float minElbowAngle;
-        public final float minHipAngle;
-        public final float minKneeAngle;
-        public final long durationMs;
-        public final String reason;
-
-        RepEvent(boolean valid, float minElbowAngle, float minHipAngle, float minKneeAngle,
-                 long durationMs, String reason) {
-            this.valid = valid;
-            this.minElbowAngle = minElbowAngle;
-            this.minHipAngle = minHipAngle;
-            this.minKneeAngle = minKneeAngle;
-            this.durationMs = durationMs;
-            this.reason = reason;
-        }
-    }
-
-    // ---- 阈值 ----
+    // ---- 阈值（角度，单位：度） ----
     /** 手臂接近伸直的角度。 */
     private static final float TOP_ANGLE = 152f;
-    /** 看到这个角度就认为开始下放。 */
-    private static final float START_DOWN_ANGLE = 132f;
-    /** 到位（有效深度）的角度。 */
+    /** 下放到该角度以下视为到位（有效深度）。 */
     private static final float DEPTH_ANGLE = 100f;
-    /** 低于这个角度才算"明显做了但不够深"，否则忽略（避免抖动误计）。 */
+    /** 低于该角度才算"明显做了但不够深"，否则忽略（避免抖动误计）。 */
     private static final float PARTIAL_ANGLE = 122f;
-    /** 髋部直线度阈值：肩-髋-踝夹角小于它说明塌腰或撅臀。 */
+
+    // ---- 阈值（比例量） ----
+    /** 深度进度达到该值视为"开始下放"。 */
+    private static final float DOWN_START_DEPTH = 0.22f;
+    /** 深度进度回落到该值以下视为"回到撑起位"。 */
+    private static final float TOP_DEPTH = 0.10f;
+    /** 深度进度 ≥ 该值视为有效深度（1.0 = 完全到顶）。 */
+    private static final float FULL_DEPTH = 0.85f;
+    /** 深度进度 ≥ 该值算"明显做了但不够深"。 */
+    private static final float PARTIAL_DEPTH = 0.45f;
+    /** 髋偏离肩-踝连线超过该比例（×躯干长度）视为塌腰/撅臀。 */
+    private static final float SAG_LIMIT = 0.13f;
+    /** 侧对镜头时，肩-髋-踝夹角低于该值也判定为身体不直。 */
     private static final float HIP_STRAIGHT_ANGLE = 150f;
     /** 膝盖弯曲到该角度以下视为跪姿。 */
     private static final float KNEEL_ANGLE = 120f;
+    /** 手腕至少要低于肩部多少（比例量）才算"撑地"姿态。 */
+    private static final float MIN_WRIST_DROP = 0.02f;
+    /** 躯干与水平方向的最大夹角（度），超过说明不是俯卧撑姿态。 */
+    private static final float MAX_TORSO_HORIZONTAL = 55f;
     /** 一次动作的最短时长，过滤抖动。 */
     private static final long MIN_REP_MS = 350;
-    /** 肘角平滑系数（仅用于阶段切换，深度判定用原始角度以免滞后）。 */
+    /** 允许的人体丢失时长。 */
+    private static final long DROPOUT_MS = 500;
+    /** 深度平滑系数（仅影响显示与阶段切换）。 */
     private static final float SMOOTHING = 0.5f;
-    /** 躯干与水平方向的最大夹角（度）。 */
-    private static final float MAX_TORSO_HORIZONTAL = 55f;
 
     private final ExerciseType type;
     private final String variant;
-    private final Listener listener;
+    private final RepListener listener;
 
-    private float smoothedElbow = Float.NaN;
-    private float lastHipAngle = Float.NaN;
-    private float lastKneeAngle = Float.NaN;
     private float lastElbow = Float.NaN;
+    private float smoothedDepth = Float.NaN;
+    /** 撑起位时手腕比肩低的基准高度（自动校准），用于把"下降多少"换算成 0~1。 */
+    private float topDrop = Float.NaN;
 
     private boolean downPhase;
     private long downStartMs;
-    private float repMinElbow = Float.NaN;
-    private float repMinHip = Float.NaN;
-    private float repMinKnee = Float.NaN;
-    private boolean sawValidPosture;
+    private float repMaxDepth;
+    private float repMinElbow;
+    private float repMaxDropDepth;
+    private float repMaxSag;
+    private boolean repStraight = true;
+    private boolean repKneeling;
 
     private int goodReps;
     private int badReps;
@@ -87,22 +81,22 @@ public class PushUpCounter implements ExerciseAnalyzer {
     private String hint = "";
     private String phaseText = "等待开始";
 
-    public PushUpCounter(ExerciseType type, String variant, Listener listener) {
+    private long lastValidMs = -1;
+    private BodyMetrics.View lastView = BodyMetrics.View.UNKNOWN;
+
+    public PushUpCounter(ExerciseType type, String variant, RepListener listener) {
         this.type = type == null ? ExerciseType.PUSHUP : type;
         this.variant = variant == null ? "" : variant;
         this.listener = listener;
     }
 
-    /** 折凳"手撑凳"变体：底部角度略放宽（斜面上身体行程更小）。 */
+    /** 折凳"手撑凳"变体：斜面上身体行程更小，阈值放宽一些。 */
     private float depthAngle() {
-        if (type == ExerciseType.CHAIR_PUSHUP && isHandsOnChair()) {
-            return DEPTH_ANGLE + 6f;
-        }
-        return DEPTH_ANGLE;
+        return isHandsOnChair() ? DEPTH_ANGLE + 6f : DEPTH_ANGLE;
     }
 
-    private float partialAngle() {
-        return Math.max(depthAngle() + 8f, PARTIAL_ANGLE);
+    private float angleTop() {
+        return TOP_ANGLE;
     }
 
     private boolean isHandsOnChair() {
@@ -111,135 +105,202 @@ public class PushUpCounter implements ExerciseAnalyzer {
 
     @Override
     public void reset() {
-        smoothedElbow = Float.NaN;
-        lastHipAngle = Float.NaN;
-        lastKneeAngle = Float.NaN;
         lastElbow = Float.NaN;
+        smoothedDepth = Float.NaN;
+        topDrop = Float.NaN;
         downPhase = false;
         downStartMs = 0;
+        repMaxDepth = 0f;
         repMinElbow = Float.NaN;
-        repMinHip = Float.NaN;
-        repMinKnee = Float.NaN;
-        sawValidPosture = false;
+        repMaxDropDepth = 0f;
+        repMaxSag = 0f;
+        repStraight = true;
+        repKneeling = false;
         goodReps = 0;
         badReps = 0;
         formErrors = 0;
         hint = "";
         phaseText = "等待开始";
+        lastValidMs = -1;
+        lastView = BodyMetrics.View.UNKNOWN;
     }
 
     @Override
     public void process(PoseFrame frame) {
+        long now = frame == null ? System.currentTimeMillis() : frame.getTimestampMs();
+
         if (frame == null || !frame.isVisible()) {
-            if (downPhase) {
-                downPhase = false;
-            }
-            phaseText = "未检测到人体";
-            hint = "请让全身进入画面（建议侧面对着手机）";
+            handleDropout(now);
             return;
         }
+        BodyMetrics metrics = BodyMetrics.of(frame);
+        if (!metrics.valid) {
+            phaseText = "未完整识别到身体";
+            hint = "请让肩部与髋部都进入画面";
+            handleDropout(now);
+            return;
+        }
+        lastValidMs = now;
+        lastView = metrics.view;
 
         float elbow = PoseMath.averageAngle(frame,
                 PoseFrame.LEFT_SHOULDER, PoseFrame.LEFT_ELBOW, PoseFrame.LEFT_WRIST,
                 PoseFrame.RIGHT_SHOULDER, PoseFrame.RIGHT_ELBOW, PoseFrame.RIGHT_WRIST);
-        if (Float.isNaN(elbow)) {
-            phaseText = "请让手臂完整入镜";
-            hint = "手臂被遮挡或超出画面";
-            return;
-        }
-        smoothedElbow = Float.isNaN(smoothedElbow)
-                ? elbow
-                : smoothedElbow + SMOOTHING * (elbow - smoothedElbow);
-        lastElbow = smoothedElbow;
+        lastElbow = elbow;
 
-        float hip = PoseMath.averageAngle(frame,
-                PoseFrame.LEFT_SHOULDER, PoseFrame.LEFT_HIP, PoseFrame.LEFT_ANKLE,
-                PoseFrame.RIGHT_SHOULDER, PoseFrame.RIGHT_HIP, PoseFrame.RIGHT_ANKLE);
-        float knee = PoseMath.averageAngle(frame,
-                PoseFrame.LEFT_HIP, PoseFrame.LEFT_KNEE, PoseFrame.LEFT_ANKLE,
-                PoseFrame.RIGHT_HIP, PoseFrame.RIGHT_KNEE, PoseFrame.RIGHT_ANKLE);
-        lastHipAngle = hip;
-        lastKneeAngle = knee;
-
-        // 双手应低于肩（撑在地面或凳面上），躯干接近水平：否则视为没有进入俯卧撑姿态
-        boolean handsBelowShoulders = handsBelowShoulders(frame);
-        float torsoHorizontal = PoseMath.torsoAngleFromHorizontal(frame);
-        boolean postureOk = handsBelowShoulders
-                && (Float.isNaN(torsoHorizontal) || torsoHorizontal < MAX_TORSO_HORIZONTAL);
-
-        if (!postureOk) {
-            if (downPhase) {
-                downPhase = false;
-            }
+        // ---- 姿态门槛：躯干接近水平，双手撑在肩下方 ----
+        float torsoHorizontal = metrics.torsoAngleFromHorizontal();
+        boolean prone = !Float.isNaN(torsoHorizontal) && torsoHorizontal < MAX_TORSO_HORIZONTAL;
+        boolean handsDown = !Float.isNaN(metrics.wristDropRatio)
+                && metrics.wristDropRatio > MIN_WRIST_DROP;
+        if (!prone || !handsDown) {
+            dropPhase();
             phaseText = "未进入俯卧撑姿态";
             hint = "侧对镜头，双手撑地/撑凳，身体放平";
             return;
         }
 
+        // ---- 撑起位基准校准：手臂接近伸直时记下"手腕比肩低多少" ----
+        boolean elbowTop = Float.isNaN(elbow) || elbow >= angleTop() - 6f;
+        if (elbowTop && !Float.isNaN(metrics.wristDropRatio)) {
+            topDrop = Float.isNaN(topDrop)
+                    ? metrics.wristDropRatio
+                    : Math.max(topDrop, metrics.wristDropRatio);
+        }
+
+        // ---- 深度 0~1（越大越深） ----
+        float depthByAngle = Float.isNaN(elbow)
+                ? Float.NaN
+                : clamp((angleTop() - elbow) / (angleTop() - depthAngle()), 0f, 1.25f);
+        float depthByDrop = dropDepth(metrics.wristDropRatio);
+
+        boolean preferDrop = metrics.view == BodyMetrics.View.FRONTAL
+                || Float.isNaN(depthByAngle);
+        float depth;
+        if (preferDrop && !Float.isNaN(depthByDrop)) {
+            depth = depthByDrop;
+        } else if (!Float.isNaN(depthByAngle)) {
+            // 两个信号都有时取更灵敏的（斜对镜头时角度会被压缩）
+            depth = Float.isNaN(depthByDrop) ? depthByAngle : Math.max(depthByAngle, depthByDrop);
+        } else {
+            depth = depthByDrop;
+        }
+
+        if (Float.isNaN(depth)) {
+            phaseText = "请让手臂完整入镜";
+            hint = "手臂被遮挡或超出画面";
+            return;
+        }
+        smoothedDepth = Float.isNaN(smoothedDepth)
+                ? depth
+                : smoothedDepth + SMOOTHING * (depth - smoothedDepth);
+
+        // ---- 身体是否成直线 ----
+        float sag = Float.isNaN(metrics.sagRatio) ? 0f : metrics.sagRatio;
+        boolean straightByRatio = Float.isNaN(metrics.sagRatio) || sag <= SAG_LIMIT;
+        float hipAngle = PoseMath.averageAngle(frame,
+                PoseFrame.LEFT_SHOULDER, PoseFrame.LEFT_HIP, PoseFrame.LEFT_ANKLE,
+                PoseFrame.RIGHT_SHOULDER, PoseFrame.RIGHT_HIP, PoseFrame.RIGHT_ANKLE);
+        boolean straightByAngle = Float.isNaN(hipAngle)
+                || metrics.view != BodyMetrics.View.SIDE
+                || hipAngle >= HIP_STRAIGHT_ANGLE;
+        boolean straight = straightByRatio && straightByAngle;
+
+        float kneeAngle = PoseMath.averageAngle(frame,
+                PoseFrame.LEFT_HIP, PoseFrame.LEFT_KNEE, PoseFrame.LEFT_ANKLE,
+                PoseFrame.RIGHT_HIP, PoseFrame.RIGHT_KNEE, PoseFrame.RIGHT_ANKLE);
+        boolean kneeling = !Float.isNaN(kneeAngle) && kneeAngle < KNEEL_ANGLE;
+
         // ---- 阶段状态机 ----
         if (!downPhase) {
-            if (smoothedElbow < START_DOWN_ANGLE) {
+            if (depth > DOWN_START_DEPTH) {
                 downPhase = true;
-                downStartMs = frame.getTimestampMs();
+                downStartMs = now;
+                repMaxDepth = depth;
                 repMinElbow = elbow;
-                repMinHip = hip;
-                repMinKnee = knee;
-                sawValidPosture = true;
+                repMaxDropDepth = Float.isNaN(depthByDrop) ? 0f : depthByDrop;
+                repMaxSag = sag;
+                repStraight = straight;
+                repKneeling = kneeling;
             } else {
-                phaseText = smoothedElbow >= TOP_ANGLE ? "撑起（准备下放）" : "下放中";
+                phaseText = depth < TOP_DEPTH ? "撑起（准备下放）" : "下放中";
                 hint = "";
+                return;
             }
         } else {
-            repMinElbow = min(repMinElbow, elbow);
-            repMinHip = min(repMinHip, hip);
-            repMinKnee = min(repMinKnee, knee);
-            if (!Float.isNaN(hip) && hip < HIP_STRAIGHT_ANGLE) {
-                sawValidPosture = false;
+            repMaxDepth = Math.max(repMaxDepth, depth);
+            if (!Float.isNaN(elbow)) {
+                repMinElbow = Float.isNaN(repMinElbow) ? elbow : Math.min(repMinElbow, elbow);
             }
-            if (!Float.isNaN(knee) && knee < KNEEL_ANGLE) {
-                sawValidPosture = false;
+            if (!Float.isNaN(depthByDrop)) {
+                repMaxDropDepth = Math.max(repMaxDropDepth, depthByDrop);
             }
+            repMaxSag = Math.max(repMaxSag, sag);
+            if (!straight) {
+                repStraight = false;
+            }
+            if (kneeling) {
+                repKneeling = true;
+            }
+        }
 
-            if (smoothedElbow >= TOP_ANGLE) {
-                long duration = frame.getTimestampMs() - downStartMs;
-                finishRep(duration);
-            } else {
-                phaseText = "下放中";
-                hint = formHint(hip, knee);
+        // 回到撑起位 → 结算
+        if (depth <= TOP_DEPTH) {
+            if (downPhase) {
+                finishRep(now - downStartMs);
             }
+            phaseText = "撑起";
+        } else {
+            phaseText = downPhase ? "下放中" : "下放中";
+            hint = depthHint(repMaxSag, repKneeling, depth);
         }
     }
 
+    /** 手腕下降比例 → 0~1 深度。若基准还没建立则返回 NaN。 */
+    private float dropDepth(float wristDropRatio) {
+        if (Float.isNaN(wristDropRatio) || Float.isNaN(topDrop) || topDrop <= MIN_WRIST_DROP) {
+            return Float.NaN;
+        }
+        float travel = topDrop * 0.72f; // 手腕几乎贴到肩的高度即视为到底
+        return clamp((topDrop - wristDropRatio) / Math.max(0.02f, travel), 0f, 1.25f);
+    }
+
     private void finishRep(long durationMs) {
-        float minElbow = Float.isNaN(repMinElbow) ? 180f : repMinElbow;
-        float minHip = Float.isNaN(repMinHip) ? 180f : repMinHip;
-        float minKnee = Float.isNaN(repMinKnee) ? 180f : repMinKnee;
-        // 先保存本次动作的姿势标记，再清空状态
-        boolean postureOk = sawValidPosture;
+        float minElbow = repMinElbow;
+        float maxDropDepth = repMaxDropDepth;
+        boolean straight = repStraight;
+        boolean kneeling = repKneeling;
+        float sawSag = repMaxSag;
 
         downPhase = false;
+        repMaxDepth = 0f;
         repMinElbow = Float.NaN;
-        repMinHip = Float.NaN;
-        repMinKnee = Float.NaN;
-        sawValidPosture = true;
+        repMaxDropDepth = 0f;
+        repMaxSag = 0f;
+        repStraight = true;
+        repKneeling = false;
 
         if (durationMs < MIN_REP_MS) {
             phaseText = "撑起";
             return; // 抖动，忽略
         }
 
-        boolean deepEnough = minElbow <= depthAngle();
-        boolean clearlyMoved = minElbow <= partialAngle();
-        boolean bodyOk = minHip >= HIP_STRAIGHT_ANGLE && minKnee >= KNEEL_ANGLE && postureOk;
+        // 深度判定：角度阈值为主（侧对镜头最准），手腕下降比例作为正对镜头/手臂遮挡时的兜底
+        boolean deepEnough = (!Float.isNaN(minElbow) && minElbow <= depthAngle())
+                || maxDropDepth >= FULL_DEPTH;
+        boolean clearlyMoved = (!Float.isNaN(minElbow) && minElbow <= partialAngle())
+                || maxDropDepth >= PARTIAL_DEPTH;
 
         String reason = null;
-        if (!bodyOk) {
-            reason = minKnee < KNEEL_ANGLE ? "膝盖弯曲（跪姿）" : "塌腰/撅臀，身体未成直线";
+        if (kneeling) {
+            reason = "膝盖弯曲（跪姿）";
+        } else if (!straight) {
+            reason = sawSag > SAG_LIMIT ? "塌腰/撅臀，身体未成直线" : "身体未成直线";
         } else if (!deepEnough) {
             reason = "下放幅度不足";
         }
 
-        if (!bodyOk) {
+        if (!straight || kneeling) {
             badReps++;
             formErrors++;
         } else if (deepEnough) {
@@ -248,7 +309,6 @@ public class PushUpCounter implements ExerciseAnalyzer {
             badReps++;
             formErrors++;
         } else {
-            // 幅度太小，不计数
             phaseText = "幅度不足，未计数";
             hint = "胸口再往下放一些";
             return;
@@ -257,95 +317,63 @@ public class PushUpCounter implements ExerciseAnalyzer {
         phaseText = "撑起";
         hint = reason == null ? "" : reason;
         if (listener != null) {
-            listener.onRep(new RepEvent(reason == null, minElbow, minHip, minKnee,
-                    durationMs, reason));
+            listener.onRep(new RepEvent(reason == null, reason, durationMs,
+                    goodReps, badReps, lastElbow, sawSag));
         }
     }
 
-    private String formHint(float hip, float knee) {
-        if (!Float.isNaN(knee) && knee < KNEEL_ANGLE) {
+    private void handleDropout(long now) {
+        if (lastValidMs < 0) {
+            phaseText = "未检测到人体";
+            hint = "请让全身进入画面（侧对镜头更准）";
+            return;
+        }
+        if (now - lastValidMs > DROPOUT_MS) {
+            // 丢失太久，放弃当前这次动作，避免"隔空计数"
+            dropPhase();
+            phaseText = "未检测到人体";
+            hint = "请让全身进入画面";
+        } else {
+            phaseText = "识别不稳定";
+            hint = "保持动作，稍等恢复";
+        }
+    }
+
+    private void dropPhase() {
+        downPhase = false;
+        repMaxDepth = 0f;
+        repMaxSag = 0f;
+        repStraight = true;
+        repKneeling = false;
+    }
+
+    private String depthHint(float sag, boolean kneeling, float depth) {
+        if (kneeling) {
             return "膝盖弯曲了，伸直双腿";
         }
-        if (!Float.isNaN(hip) && hip < HIP_STRAIGHT_ANGLE) {
+        if (sag > SAG_LIMIT) {
             return "塌腰/撅臀，请收紧核心";
+        }
+        if (depth > DOWN_START_DEPTH && depth < PARTIAL_DEPTH) {
+            return "再往下一点";
         }
         return "";
     }
 
-    private boolean handsBelowShoulders(PoseFrame f) {
-        boolean leftOk = PoseMath.isReliable(f, PoseFrame.LEFT_WRIST)
-                && PoseMath.isReliable(f, PoseFrame.LEFT_SHOULDER);
-        boolean rightOk = PoseMath.isReliable(f, PoseFrame.RIGHT_WRIST)
-                && PoseMath.isReliable(f, PoseFrame.RIGHT_SHOULDER);
-        int count = 0;
-        float diff = 0;
-        if (leftOk) {
-            diff += f.getY(PoseFrame.LEFT_WRIST) - f.getY(PoseFrame.LEFT_SHOULDER);
-            count++;
-        }
-        if (rightOk) {
-            diff += f.getY(PoseFrame.RIGHT_WRIST) - f.getY(PoseFrame.RIGHT_SHOULDER);
-            count++;
-        }
-        if (count == 0) {
-            return true; // 手腕不可见时不阻塞判定
-        }
-        return diff / count > 0.01f;
+    private static float clamp(float value, float min, float max) {
+        return Math.max(min, Math.min(max, value));
     }
 
-    private static float min(float current, float candidate) {
-        if (Float.isNaN(candidate)) {
-            return current;
-        }
-        if (Float.isNaN(current)) {
-            return candidate;
-        }
-        return Math.min(current, candidate);
-    }
+    // ---- ExerciseAnalyzer ----
 
     @Override
     public String getScoreText() {
-        if (type == ExerciseType.BAD_PUSHUP) {
-            return badReps + " 次";
-        }
-        return goodReps + " 次";
-    }
-
-    public int getGoodReps() {
-        return goodReps;
-    }
-
-    public int getBadReps() {
-        return badReps;
-    }
-
-    public int getFormErrors() {
-        return formErrors;
-    }
-
-    public float getCurrentElbowAngle() {
-        return lastElbow;
-    }
-
-    public float getCurrentHipAngle() {
-        return lastHipAngle;
-    }
-
-    /** 当前下放深度进度 0~1，用于界面上的进度条。 */
-    public float getDepthProgress() {
-        if (Float.isNaN(smoothedElbow)) {
-            return 0f;
-        }
-        float progress = (TOP_ANGLE - smoothedElbow) / (TOP_ANGLE - depthAngle());
-        return Math.max(0f, Math.min(1f, progress));
+        return (type == ExerciseType.BAD_PUSHUP ? badReps : goodReps) + " 次";
     }
 
     @Override
     public String getStatusText() {
-        if (hint != null && hint.length() > 0) {
-            return phaseText + " · " + hint;
-        }
-        return phaseText;
+        return hint == null || hint.length() == 0 ? phaseText : phaseText + " · " + hint;
     }
 
     @Override
@@ -359,8 +387,32 @@ public class PushUpCounter implements ExerciseAnalyzer {
         return goodReps + badReps > 0;
     }
 
-    /** 当前动作类型。 */
-    public ExerciseType getType() {
-        return type;
+    @Override
+    public int getGoodReps() {
+        return goodReps;
+    }
+
+    @Override
+    public int getBadReps() {
+        return badReps;
+    }
+
+    @Override
+    public int getFormErrors() {
+        return formErrors;
+    }
+
+    @Override
+    public float getDepthProgress() {
+        return Float.isNaN(smoothedDepth) ? 0f : clamp(smoothedDepth, 0f, 1f);
+    }
+
+    public float getCurrentElbowAngle() {
+        return lastElbow;
+    }
+
+    /** 最近一次识别到的机位视角（调试用）。 */
+    public BodyMetrics.View getLastView() {
+        return lastView;
     }
 }

@@ -7,6 +7,7 @@ import com.zxw.fitness.data.SessionStore;
 import com.zxw.fitness.model.ExerciseType;
 import com.zxw.fitness.model.PoseFrame;
 import com.zxw.fitness.model.Session;
+import com.zxw.fitness.pose.PoseSmoother;
 
 import java.io.File;
 import java.io.IOException;
@@ -14,13 +15,18 @@ import java.io.IOException;
 /**
  * 训练过程的记录器：把每帧关键点写入文件，并汇总动作判定结果。
  *
- * <p>对外的界面部分（计数/计时/提示）直接透传给具体判定器。</p>
+ * <p>职责：</p>
+ * <ol>
+ *     <li>用 {@link PoseSmoother} 对相机帧做滤波（抗抖动、短暂丢失保持、跳变剔除），
+ *     再把结果交给具体判定器；</li>
+ *     <li>把滤波后的关键点按固定间隔写入骨架文件，回放时重放同一套数据；</li>
+ *     <li>训练结束时把统计结果填进 {@link Session}。</li>
+ * </ol>
  */
-public class WorkoutRecorder implements ExerciseAnalyzer,
-        PushUpCounter.Listener, HandstandTimer.Listener {
+public class WorkoutRecorder implements ExerciseAnalyzer, RepListener, HoldListener {
 
     public interface Listener {
-        void onRep(PushUpCounter.RepEvent event);
+        void onRep(RepEvent event);
 
         void onHoldStart(int attempt);
 
@@ -35,8 +41,9 @@ public class WorkoutRecorder implements ExerciseAnalyzer,
     private final Listener listener;
     private final boolean recordPose;
     private final ExerciseAnalyzer delegate;
-    private final PushUpCounter pushUpCounter;
-    private final HandstandTimer handstandTimer;
+    private final RepAnalyzer repAnalyzer;
+    private final HoldAnalyzer holdAnalyzer;
+    private final PoseSmoother smoother = new PoseSmoother();
 
     private PoseLogWriter writer;
     private long lastRecordedMs = -1;
@@ -50,24 +57,59 @@ public class WorkoutRecorder implements ExerciseAnalyzer,
         this.listener = listener;
         ExerciseType type = session.getExerciseType();
         if (type.isTimerExercise()) {
-            handstandTimer = new HandstandTimer(type, this);
-            pushUpCounter = null;
-            delegate = handstandTimer;
+            HoldAnalyzer analyzer = createHoldAnalyzer(type);
+            holdAnalyzer = analyzer;
+            repAnalyzer = null;
+            delegate = analyzer;
         } else {
-            pushUpCounter = new PushUpCounter(type, session.getVariant(), this);
-            handstandTimer = null;
-            delegate = pushUpCounter;
+            RepAnalyzer analyzer = createRepAnalyzer(type, session.getVariant());
+            repAnalyzer = analyzer;
+            holdAnalyzer = null;
+            delegate = analyzer;
         }
     }
 
-    /** 处理一帧（实时与回放共用）。 */
+    /** 按动作类型创建判定器。新增动作时只需要改这里 + {@link ExerciseType}。 */
+    private HoldAnalyzer createHoldAnalyzer(ExerciseType type) {
+        if (type == ExerciseType.PLANK) {
+            return new PlankTimer(this);
+        }
+        return new HandstandTimer(type, this);
+    }
+
+    private RepAnalyzer createRepAnalyzer(ExerciseType type, String variant) {
+        // 这里用 if-else 而不是 switch(R.id)：保持与项目里 AGP 8 的写法习惯一致
+        if (type == ExerciseType.SQUAT) {
+            return new SquatCounter(this);
+        }
+        if (type == ExerciseType.PULLUP) {
+            return new PullUpCounter(this);
+        }
+        return new PushUpCounter(type, variant, this);
+    }
+
+    /**
+     * 处理一帧（实时与回放共用）。
+     *
+     * @param frame        原始关键点
+     * @param sourceWidth  摆正后画面宽（用于骨架文件）
+     * @param sourceHeight 摆正后画面高
+     */
     public void onPose(PoseFrame frame, int sourceWidth, int sourceHeight) {
         if (finished || frame == null) {
             return;
         }
+        PoseFrame filtered = smoother.smooth(frame);
         if (recordPose) {
-            recordFrame(frame, sourceWidth, sourceHeight);
+            recordFrame(filtered, sourceWidth, sourceHeight);
         }
+        delegate.process(filtered);
+    }
+
+    /**
+     * 只做判定，不写骨架文件（回放时使用，数据已经是滤波后的）。
+     */
+    public void processRecorded(PoseFrame frame) {
         delegate.process(frame);
     }
 
@@ -115,13 +157,19 @@ public class WorkoutRecorder implements ExerciseAnalyzer,
         }
         long duration = Math.max(0, endTimestampMs - session.getStartedAt());
         session.setDurationMs(duration);
-        if (pushUpCounter != null) {
-            session.setReps(pushUpCounter.getGoodReps());
-            session.setBadReps(pushUpCounter.getBadReps());
-            session.setFormErrors(pushUpCounter.getFormErrors());
-        } else if (handstandTimer != null) {
-            session.setHoldMs(handstandTimer.getBestHoldMs());
-            session.setWallContact(handstandTimer.getWallRatio() >= 0.5f);
+        session.setStability(holdAnalyzer != null ? holdAnalyzer.getStability() : Float.NaN);
+        if (repAnalyzer != null) {
+            session.setReps(repAnalyzer.getGoodReps());
+            session.setBadReps(repAnalyzer.getBadReps());
+            session.setFormErrors(repAnalyzer.getFormErrors());
+        } else if (holdAnalyzer != null) {
+            session.setHoldMs(holdAnalyzer.getBestHoldMs());
+            session.setFormErrors(0);
+            if (session.getExerciseType() == ExerciseType.WALL_HANDSTAND) {
+                float wallRatio = holdAnalyzer instanceof HandstandTimer
+                        ? ((HandstandTimer) holdAnalyzer).getWallRatio() : 0f;
+                session.setWallContact(wallRatio >= 0.5f);
+            }
         }
         if (!hasRecordedPose()) {
             session.setPoseFile(null);
@@ -133,18 +181,35 @@ public class WorkoutRecorder implements ExerciseAnalyzer,
         return finished;
     }
 
-    public PushUpCounter getPushUpCounter() {
-        return pushUpCounter;
+    /** 计数类判定器（计时类动作返回 null）。 */
+    public RepAnalyzer getRepAnalyzer() {
+        return repAnalyzer;
     }
 
+    /** 计时类判定器（计数类动作返回 null）。 */
+    public HoldAnalyzer getHoldAnalyzer() {
+        return holdAnalyzer;
+    }
+
+    /** 兼容旧调用：俯卧撑类动作返回具体实现，否则 null。 */
+    public PushUpCounter getPushUpCounter() {
+        return repAnalyzer instanceof PushUpCounter ? (PushUpCounter) repAnalyzer : null;
+    }
+
+    /** 兼容旧调用：倒立类动作返回具体实现，否则 null。 */
     public HandstandTimer getHandstandTimer() {
-        return handstandTimer;
+        return holdAnalyzer instanceof HandstandTimer ? (HandstandTimer) holdAnalyzer : null;
+    }
+
+    public PoseSmoother getSmoother() {
+        return smoother;
     }
 
     // ---- 透传 ----
 
     @Override
     public void reset() {
+        smoother.reset();
         delegate.reset();
     }
 
@@ -176,7 +241,7 @@ public class WorkoutRecorder implements ExerciseAnalyzer,
     // ---- 判定器回调 ----
 
     @Override
-    public void onRep(PushUpCounter.RepEvent event) {
+    public void onRep(RepEvent event) {
         if (listener != null) {
             listener.onRep(event);
         }

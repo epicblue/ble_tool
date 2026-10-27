@@ -216,8 +216,10 @@ public class ReplayActivity extends Activity {
         tvTitle.setText(type.getTitle()
                 + (type == ExerciseType.CHAIR_PUSHUP
                 ? ("hands".equals(session.getVariant()) ? " · 手撑凳" : " · 脚垫凳") : ""));
+        String stability = Float.isNaN(session.getStability())
+                ? "" : " · 稳定度 " + Math.round(session.getStability() * 100) + "%";
         tvSubtitle.setText(TimeUtils.formatFriendly(session.getStartedAt())
-                + " · 成绩 " + resultText(session));
+                + " · 成绩 " + resultText(session) + stability);
         tvUnit.setText(type.getUnitLabel());
 
         btnPrev.setVisibility(playlistIndex > 0 ? View.VISIBLE : View.GONE);

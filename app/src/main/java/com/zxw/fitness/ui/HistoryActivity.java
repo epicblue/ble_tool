@@ -165,6 +165,28 @@ public class HistoryActivity extends Activity {
                 .show();
     }
 
+    private static String iconFor(ExerciseType type) {
+        switch (type) {
+            case HANDSTAND:
+                return "🤸";
+            case WALL_HANDSTAND:
+                return "🧗";
+            case CHAIR_PUSHUP:
+                return "🪑";
+            case BAD_PUSHUP:
+                return "⚠️";
+            case PLANK:
+                return "🧘";
+            case SQUAT:
+                return "🏋";
+            case PULLUP:
+                return "🧲";
+            case PUSHUP:
+            default:
+                return "💪";
+        }
+    }
+
     private Bitmap loadThumb(Session session) {
         File file = SessionStore.resolveMedia(this, session.getUserId(), session.getThumbFile());
         if (file == null || !file.exists()) {
@@ -201,7 +223,7 @@ public class HistoryActivity extends Activity {
             } else {
                 holder.ivThumb.setImageDrawable(null);
                 holder.tvThumbIcon.setVisibility(View.VISIBLE);
-                holder.tvThumbIcon.setText(type.isTimerExercise() ? "🤸" : "💪");
+                holder.tvThumbIcon.setText(iconFor(type));
             }
 
             holder.tvTitle.setText(type.getTitle()
@@ -232,6 +254,9 @@ public class HistoryActivity extends Activity {
             if (!type.isTimerExercise() && session.getBadReps() > 0) {
                 holder.tvBadgeForm.setVisibility(View.VISIBLE);
                 holder.tvBadgeForm.setText("不标准 " + session.getBadReps());
+            } else if (type.isTimerExercise() && !Float.isNaN(session.getStability())) {
+                holder.tvBadgeForm.setVisibility(View.VISIBLE);
+                holder.tvBadgeForm.setText("稳定度 " + Math.round(session.getStability() * 100) + "%");
             } else {
                 holder.tvBadgeForm.setVisibility(View.GONE);
             }

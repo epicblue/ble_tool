@@ -25,7 +25,9 @@ import androidx.lifecycle.LifecycleOwner;
 import androidx.lifecycle.LifecycleRegistry;
 
 import com.zxw.R;
-import com.zxw.fitness.analysis.PushUpCounter;
+import com.zxw.fitness.analysis.HoldAnalyzer;
+import com.zxw.fitness.analysis.RepAnalyzer;
+import com.zxw.fitness.analysis.RepEvent;
 import com.zxw.fitness.analysis.WorkoutRecorder;
 import com.zxw.fitness.camera.CameraController;
 import com.zxw.fitness.camera.SkeletonOverlay;
@@ -279,27 +281,33 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
         tvElapsed.setText(TimeUtils.formatStopwatch(elapsed));
 
         if (exerciseType.isTimerExercise()) {
-            long hold = recorder.getHandstandTimer().getBestHoldMs();
-            long current = recorder.getHandstandTimer().getCurrentHoldMs();
-            tvScore.setText(String.format(Locale.US, "%.1f", hold / 1000.0));
+            HoldAnalyzer hold = recorder.getHoldAnalyzer();
+            if (hold == null) {
+                return;
+            }
+            long best = hold.getBestHoldMs();
+            long current = hold.getCurrentHoldMs();
+            tvScore.setText(String.format(Locale.US, "%.1f", best / 1000.0));
             tvUnit.setText("秒");
             int percent = (int) Math.min(100, current * 100 / 60000);
             progress.setProgress(percent);
-            tvDetail.setText(recorder.getDetailText()
-                    + (exerciseType == ExerciseType.WALL_HANDSTAND
-                    ? String.format(Locale.US, " · 贴墙 %d%%",
-                    (int) (recorder.getHandstandTimer().getWallRatio() * 100)) : ""));
-            tvStatus.setText(recorder.getStatusText());
+            String extra = hold.getExtraText();
+            tvDetail.setText(hold.getDetailText()
+                    + (extra == null || extra.length() == 0 ? "" : " · " + extra));
+            tvStatus.setText(hold.getStatusText());
         } else {
-            PushUpCounter counter = recorder.getPushUpCounter();
+            RepAnalyzer reps = recorder.getRepAnalyzer();
+            if (reps == null) {
+                return;
+            }
             tvScore.setText(String.valueOf(exerciseType == ExerciseType.BAD_PUSHUP
-                    ? counter.getBadReps() : counter.getGoodReps()));
+                    ? reps.getBadReps() : reps.getGoodReps()));
             tvUnit.setText("次");
-            progress.setProgress((int) (counter.getDepthProgress() * 100));
-            tvStatus.setText(counter.getStatusText());
-            tvDetail.setText(counter.getDetailText());
-            tvBadge.setText("不标准 " + counter.getBadReps());
-            tvBadge.setVisibility(counter.getBadReps() > 0 ? View.VISIBLE : View.GONE);
+            progress.setProgress((int) (reps.getDepthProgress() * 100));
+            tvStatus.setText(reps.getStatusText());
+            tvDetail.setText(reps.getDetailText());
+            tvBadge.setText("不标准 " + reps.getBadReps());
+            tvBadge.setVisibility(reps.getBadReps() > 0 ? View.VISIBLE : View.GONE);
         }
 
         if (videoRequested && camera != null && camera.isRecording()) {
@@ -608,11 +616,11 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
     // ---- WorkoutRecorder.Listener ----
 
     @Override
-    public void onRep(PushUpCounter.RepEvent event) {
+    public void onRep(RepEvent event) {
         if (event.valid) {
-            tvStatus.setText("完成第 " + (recorder == null ? 0 : recorder.getPushUpCounter().getGoodReps()) + " 次");
+            tvStatus.setText("完成第 " + event.goodReps + " 次");
         } else {
-            tvStatus.setText("这次不标准：" + event.reason);
+            tvStatus.setText("这次不标准：" + (event.reason == null ? "动作不到位" : event.reason));
         }
     }
 

@@ -32,7 +32,7 @@ import java.util.Map;
 public class ExerciseListActivity extends Activity {
 
     private static final ExerciseType[] TYPES = ExerciseType.values();
-    private static final String[] EMOJIS = {"🤸", "🧗", "🪑", "💪", "⚠️"};
+    private static final String[] EMOJIS = {"🤸", "🧗", "🪑", "💪", "⚠️", "🧘", "🏋", "🧲"};
 
     private UserProfile currentUser;
     private ExerciseAdapter adapter;
@@ -105,9 +105,11 @@ public class ExerciseListActivity extends Activity {
                 map.put(key, stats);
             }
             stats.count++;
-            double value = s.getExerciseType() == ExerciseType.BAD_PUSHUP
-                    ? s.getBadReps() : s.getResultValue();
+            double value = s.getResultValue();
             stats.best = Math.max(stats.best, value);
+            if (!Float.isNaN(s.getStability())) {
+                stats.stability = Math.max(stats.stability, s.getStability());
+            }
             if (s.getStartedAt() > stats.lastTime) {
                 stats.lastTime = s.getStartedAt();
             }
@@ -119,6 +121,7 @@ public class ExerciseListActivity extends Activity {
         int count;
         double best;
         long lastTime;
+        float stability;
     }
 
     private void startTraining(ExerciseType type, String variant) {
@@ -182,6 +185,10 @@ public class ExerciseListActivity extends Activity {
                     bestText = String.format(Locale.US, "最多不标准 %d 次", (int) s.best);
                 } else {
                     bestText = String.format(Locale.US, "最佳 %d 次", (int) s.best);
+                }
+                if (s.stability > 0) {
+                    bestText = bestText + String.format(Locale.US, " · 稳定度 %d%%",
+                            (int) (s.stability * 100));
                 }
                 holder.tvBest.setText(String.format(Locale.CHINA, "%s · 共 %d 次训练", bestText, s.count));
                 holder.tvBest.setTextColor(getColorCompat(R.color.fit_accent));

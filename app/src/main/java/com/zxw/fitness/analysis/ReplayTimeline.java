@@ -8,6 +8,8 @@ import java.util.List;
 /**
  * 回放时间轴：把录制的关键点重新喂给判定器，预先算出每一帧对应的计数/计时与提示，
  * 回放拖动进度条时可以直接取值，无需重新计算。
+ *
+ * <p>与实时训练共用同一套判定器，因此回放显示的成绩与录制时一致。</p>
  */
 public class ReplayTimeline {
 
@@ -21,7 +23,7 @@ public class ReplayTimeline {
     private final long durationMs;
 
     private ReplayTimeline(long[] times, float[] score, float[] progress, String[] status,
-                          int[] goodReps, int[] badReps, long[] holdMs, long durationMs) {
+                           int[] goodReps, int[] badReps, long[] holdMs, long durationMs) {
         this.times = times;
         this.score = score;
         this.progress = progress;
@@ -42,12 +44,18 @@ public class ReplayTimeline {
         int[] bad = new int[size];
         long[] hold = new long[size];
 
-        PushUpCounter pushUp = null;
-        HandstandTimer timer = null;
+        RepAnalyzer repAnalyzer = null;
+        HoldAnalyzer holdAnalyzer = null;
         if (type.isTimerExercise()) {
-            timer = new HandstandTimer(type, null);
+            holdAnalyzer = type == ExerciseType.PLANK
+                    ? new PlankTimer(null)
+                    : new HandstandTimer(type, null);
+        } else if (type == ExerciseType.SQUAT) {
+            repAnalyzer = new SquatCounter(null);
+        } else if (type == ExerciseType.PULLUP) {
+            repAnalyzer = new PullUpCounter(null);
         } else {
-            pushUp = new PushUpCounter(type, variant, null);
+            repAnalyzer = new PushUpCounter(type, variant, null);
         }
 
         long duration = 0;
@@ -55,22 +63,25 @@ public class ReplayTimeline {
             PoseFrame frame = frames.get(i);
             times[i] = frame.getTimestampMs();
             duration = Math.max(duration, times[i]);
-            if (pushUp != null) {
-                pushUp.process(frame);
-                score[i] = type == ExerciseType.BAD_PUSHUP ? pushUp.getBadReps() : pushUp.getGoodReps();
-                progress[i] = pushUp.getDepthProgress();
-                good[i] = pushUp.getGoodReps();
-                bad[i] = pushUp.getBadReps();
+            if (repAnalyzer != null) {
+                repAnalyzer.process(frame);
+                int goodNow = repAnalyzer.getGoodReps();
+                int badNow = repAnalyzer.getBadReps();
+                score[i] = type == ExerciseType.BAD_PUSHUP ? badNow : goodNow;
+                progress[i] = repAnalyzer.getDepthProgress();
+                good[i] = goodNow;
+                bad[i] = badNow;
                 hold[i] = 0;
+                status[i] = repAnalyzer.getStatusText();
             } else {
-                timer.process(frame);
-                score[i] = timer.getBestHoldMs() / 1000f;
-                progress[i] = Math.min(1f, timer.getCurrentHoldMs() / 60000f);
+                holdAnalyzer.process(frame);
+                score[i] = holdAnalyzer.getBestHoldMs() / 1000f;
+                progress[i] = Math.min(1f, holdAnalyzer.getCurrentHoldMs() / 60000f);
                 good[i] = 0;
                 bad[i] = 0;
-                hold[i] = timer.getBestHoldMs();
+                hold[i] = holdAnalyzer.getBestHoldMs();
+                status[i] = holdAnalyzer.getStatusText();
             }
-            status[i] = pushUp != null ? pushUp.getStatusText() : timer.getStatusText();
         }
         return new ReplayTimeline(times, score, progress, status, good, bad, hold, duration);
     }

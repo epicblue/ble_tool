@@ -21,6 +21,8 @@ public class Session {
     private String videoFile;
     private String thumbFile;
     private String note = "";
+    /** 计时类动作的稳定度 0~1，无效时为 NaN（不参与 JSON）。 */
+    private float stability = Float.NaN;
 
     public Session() {
     }
@@ -149,6 +151,15 @@ public class Session {
 
     public void setThumbFile(String thumbFile) {
         this.thumbFile = thumbFile;
+    }
+
+    /** 计时类动作的稳定度（0~1）；无数据时返回 NaN。 */
+    public float getStability() {
+        return stability;
+    }
+
+    public void setStability(float stability) {
+        this.stability = stability;
     }
 
     public String getNote() {
