@@ -1,5 +1,7 @@
 package com.zxw.fitness.model;
 
+import java.util.Locale;
+
 /**
  * 一次训练的汇总结果。
  */
@@ -184,16 +186,14 @@ public class Session {
         return reps;
     }
 
-    /** 用于列表展示的结果文案，例如 "12 次"、"48.6 秒"。 */
+    /** 用于列表展示的结果文案，例如 "12 次"、"48.6 秒"、"86 步"。 */
     public String getResultText() {
         ExerciseType type = getExerciseType();
         if (type.isTimerExercise()) {
-            return String.format(java.util.Locale.US, "%.1f 秒", holdMs / 1000.0);
+            return String.format(Locale.US, "%.1f 秒", holdMs / 1000.0);
         }
-        if (type == ExerciseType.BAD_PUSHUP) {
-            return badReps + " 次";
-        }
-        return reps + " 次";
+        int value = type == ExerciseType.BAD_PUSHUP ? badReps : reps;
+        return value + " " + type.getUnitLabel();
     }
 
     public boolean hasPoseReplay() {

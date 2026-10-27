@@ -32,7 +32,7 @@ import java.util.Map;
 public class ExerciseListActivity extends Activity {
 
     private static final ExerciseType[] TYPES = ExerciseType.values();
-    private static final String[] EMOJIS = {"🤸", "🧗", "🪑", "💪", "⚠️", "🧘", "🏋", "🧲"};
+    private static final String[] EMOJIS = {"🤸", "🧗", "🪑", "💪", "⚠️", "🧘", "🏋", "🧲", "🧱", "🏃"};
 
     private UserProfile currentUser;
     private ExerciseAdapter adapter;
@@ -184,7 +184,8 @@ public class ExerciseListActivity extends Activity {
                 } else if (type == ExerciseType.BAD_PUSHUP) {
                     bestText = String.format(Locale.US, "最多不标准 %d 次", (int) s.best);
                 } else {
-                    bestText = String.format(Locale.US, "最佳 %d 次", (int) s.best);
+                    bestText = String.format(Locale.US, "最佳 %d %s", (int) s.best,
+                            type.getUnitLabel());
                 }
                 if (s.stability > 0) {
                     bestText = bestText + String.format(Locale.US, " · 稳定度 %d%%",

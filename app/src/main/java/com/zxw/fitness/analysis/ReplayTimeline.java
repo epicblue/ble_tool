@@ -47,13 +47,19 @@ public class ReplayTimeline {
         RepAnalyzer repAnalyzer = null;
         HoldAnalyzer holdAnalyzer = null;
         if (type.isTimerExercise()) {
-            holdAnalyzer = type == ExerciseType.PLANK
-                    ? new PlankTimer(null)
-                    : new HandstandTimer(type, null);
+            if (type == ExerciseType.PLANK) {
+                holdAnalyzer = new PlankTimer(null);
+            } else if (type == ExerciseType.WALL_SIT) {
+                holdAnalyzer = new WallSitTimer(null);
+            } else {
+                holdAnalyzer = new HandstandTimer(type, null);
+            }
         } else if (type == ExerciseType.SQUAT) {
             repAnalyzer = new SquatCounter(null);
         } else if (type == ExerciseType.PULLUP) {
             repAnalyzer = new PullUpCounter(null);
+        } else if (type == ExerciseType.RUNNING) {
+            repAnalyzer = new RunStepCounter(null);
         } else {
             repAnalyzer = new PushUpCounter(type, variant, null);
         }

@@ -236,6 +236,74 @@ final class SyntheticPoses {
         return PoseFrame.of(ts, x, y, z, c);
     }
 
+
+    /**
+     * 靠墙蹲：膝盖在脚踝正上方、髋在膝盖后侧。
+     *
+     * <p>{@code hipLift} 是髋部相对膝盖的高度（归一化坐标）。0 = 大腿水平（标准姿势），
+     * 数值越大越接近站起来。躯干长度固定，避免 bodyScale 随姿势变化导致比例判据失真。</p>
+     */
+    static PoseFrame wallSit(long ts, float hipLift) {
+        float[] x = new float[PoseFrame.LANDMARK_COUNT];
+        float[] y = new float[PoseFrame.LANDMARK_COUNT];
+        float[] z = new float[PoseFrame.LANDMARK_COUNT];
+        float[] c = new float[PoseFrame.LANDMARK_COUNT];
+
+        float kneeX = 0.62f;
+        float kneeY = 0.70f;
+        float hipX = kneeX - 0.18f;
+        float hipY = kneeY - hipLift;
+        float torso = 0.28f;
+        float shoulderY = hipY - torso;
+
+        put(x, y, c, PoseFrame.NOSE, hipX, shoulderY - 0.06f, 0.9f);
+        for (int side = 0; side < 2; side++) {
+            int[] idx = side == 0
+                    ? new int[]{PoseFrame.LEFT_SHOULDER, PoseFrame.LEFT_ELBOW, PoseFrame.LEFT_WRIST,
+                    PoseFrame.LEFT_HIP, PoseFrame.LEFT_KNEE, PoseFrame.LEFT_ANKLE}
+                    : new int[]{PoseFrame.RIGHT_SHOULDER, PoseFrame.RIGHT_ELBOW, PoseFrame.RIGHT_WRIST,
+                    PoseFrame.RIGHT_HIP, PoseFrame.RIGHT_KNEE, PoseFrame.RIGHT_ANKLE};
+            put(x, y, c, idx[0], hipX, shoulderY, 0.9f);
+            put(x, y, c, idx[1], hipX + 0.02f, shoulderY + 0.10f, 0.9f);
+            put(x, y, c, idx[2], hipX + 0.02f, shoulderY + 0.17f, 0.9f);
+            put(x, y, c, idx[3], hipX, hipY, 0.9f);
+            put(x, y, c, idx[4], kneeX, kneeY, 0.9f);
+            put(x, y, c, idx[5], kneeX, kneeY + 0.20f, 0.9f);
+        }
+        return PoseFrame.of(ts, x, y, z, c);
+    }
+
+    /**
+     * 跑步/原地跑：liftLeft / liftRight 控制两只脚抬起的幅度（0 表示落地）。
+     */
+    static PoseFrame running(long ts, float liftLeft, float liftRight) {
+        float[] x = new float[PoseFrame.LANDMARK_COUNT];
+        float[] y = new float[PoseFrame.LANDMARK_COUNT];
+        float[] z = new float[PoseFrame.LANDMARK_COUNT];
+        float[] c = new float[PoseFrame.LANDMARK_COUNT];
+
+        float hipY = 0.50f;
+        float shoulderY = hipY - 0.26f;
+        put(x, y, c, PoseFrame.NOSE, 0.5f, shoulderY - 0.06f, 0.9f);
+
+        float[] lifts = {liftLeft, liftRight};
+        for (int side = 0; side < 2; side++) {
+            int[] idx = side == 0
+                    ? new int[]{PoseFrame.LEFT_SHOULDER, PoseFrame.LEFT_ELBOW, PoseFrame.LEFT_WRIST,
+                    PoseFrame.LEFT_HIP, PoseFrame.LEFT_KNEE, PoseFrame.LEFT_ANKLE}
+                    : new int[]{PoseFrame.RIGHT_SHOULDER, PoseFrame.RIGHT_ELBOW, PoseFrame.RIGHT_WRIST,
+                    PoseFrame.RIGHT_HIP, PoseFrame.RIGHT_KNEE, PoseFrame.RIGHT_ANKLE};
+            float lift = lifts[side];
+            put(x, y, c, idx[0], 0.44f, shoulderY, 0.9f);
+            put(x, y, c, idx[1], 0.45f, shoulderY + 0.14f, 0.9f);
+            put(x, y, c, idx[2], 0.45f, shoulderY + 0.24f, 0.9f);
+            put(x, y, c, idx[3], 0.5f, hipY, 0.9f);
+            put(x, y, c, idx[4], 0.5f, hipY + 0.16f - lift * 0.5f, 0.9f);
+            put(x, y, c, idx[5], 0.5f, hipY + 0.34f - lift, 0.9f);
+        }
+        return PoseFrame.of(ts, x, y, z, c);
+    }
+
     /** 一次完整动作的角度序列（下放 + 撑起）。 */
     static float[] repProfile(float bottomAngle, float topAngle, int framesPerHalf) {
         int nDown = framesPerHalf;

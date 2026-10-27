@@ -302,7 +302,7 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
             }
             tvScore.setText(String.valueOf(exerciseType == ExerciseType.BAD_PUSHUP
                     ? reps.getBadReps() : reps.getGoodReps()));
-            tvUnit.setText("次");
+            tvUnit.setText(exerciseType.getUnitLabel());
             progress.setProgress((int) (reps.getDepthProgress() * 100));
             tvStatus.setText(reps.getStatusText());
             tvDetail.setText(reps.getDetailText());
@@ -446,7 +446,9 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
         StringBuilder message = new StringBuilder();
         message.append("结果：").append(saved.getResultText()).append("\n");
         message.append("用时：").append(TimeUtils.formatDurationCn(saved.getDurationMs())).append("\n");
-        if (!exerciseType.isTimerExercise()) {
+        if (exerciseType == ExerciseType.RUNNING) {
+            message.append(String.format(Locale.CHINA, "共 %d 步\n", saved.getReps()));
+        } else if (!exerciseType.isTimerExercise()) {
             message.append(String.format(Locale.CHINA, "有效 %d 次 · 不标准 %d 次\n",
                     saved.getReps(), saved.getBadReps()));
         } else if (exerciseType == ExerciseType.WALL_HANDSTAND) {
@@ -618,7 +620,7 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
     @Override
     public void onRep(RepEvent event) {
         if (event.valid) {
-            tvStatus.setText("完成第 " + event.goodReps + " 次");
+            tvStatus.setText("完成第 " + event.goodReps + " " + exerciseType.getUnitLabel());
         } else {
             tvStatus.setText("这次不标准：" + (event.reason == null ? "动作不到位" : event.reason));
         }

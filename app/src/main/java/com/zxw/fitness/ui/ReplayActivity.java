@@ -291,14 +291,7 @@ public class ReplayActivity extends Activity {
     }
 
     private String resultText(Session s) {
-        ExerciseType type = s.getExerciseType();
-        if (type.isTimerExercise()) {
-            return String.format(Locale.US, "%.1f 秒", s.getHoldMs() / 1000.0);
-        }
-        if (type == ExerciseType.BAD_PUSHUP) {
-            return s.getBadReps() + " 次";
-        }
-        return s.getReps() + " 次";
+        return s.getResultText();
     }
 
     private final Runnable tick = new Runnable() {
@@ -360,9 +353,15 @@ public class ReplayActivity extends Activity {
             } else {
                 tvScore.setText(String.valueOf(type == ExerciseType.BAD_PUSHUP ? bad : good));
             }
-            tvStatus.setText(timeline.getStatusAt(index)
-                    + (type.isTimerExercise() ? "" : String.format(Locale.CHINA,
-                    " · 有效 %d · 不标准 %d", good, bad)));
+            String counts;
+            if (type.isTimerExercise()) {
+                counts = "";
+            } else if (type == ExerciseType.RUNNING) {
+                counts = String.format(Locale.CHINA, " · 共 %d 步", good);
+            } else {
+                counts = String.format(Locale.CHINA, " · 有效 %d · 不标准 %d", good, bad);
+            }
+            tvStatus.setText(timeline.getStatusAt(index) + counts);
         } else {
             // 没有骨架数据时，只展示本次最终成绩
             tvScore.setText(type.isTimerExercise()

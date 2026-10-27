@@ -8,9 +8,11 @@ import static org.junit.Assert.assertTrue;
 import com.zxw.fitness.analysis.HandstandTimer;
 import com.zxw.fitness.analysis.PlankTimer;
 import com.zxw.fitness.analysis.PullUpCounter;
+import com.zxw.fitness.analysis.RunStepCounter;
 import com.zxw.fitness.analysis.PushUpCounter;
 import com.zxw.fitness.analysis.ReplayTimeline;
 import com.zxw.fitness.analysis.SquatCounter;
+import com.zxw.fitness.analysis.WallSitTimer;
 import com.zxw.fitness.data.PoseLog;
 import com.zxw.fitness.data.PoseLogWriter;
 import com.zxw.fitness.model.ExerciseType;
@@ -30,8 +32,10 @@ import static com.zxw.fitness.SyntheticPoses.plank;
 import static com.zxw.fitness.SyntheticPoses.pullUp;
 import static com.zxw.fitness.SyntheticPoses.pushUp;
 import static com.zxw.fitness.SyntheticPoses.repProfile;
+import static com.zxw.fitness.SyntheticPoses.running;
 import static com.zxw.fitness.SyntheticPoses.squat;
 import static com.zxw.fitness.SyntheticPoses.standing;
+import static com.zxw.fitness.SyntheticPoses.wallSit;
 
 /**
  * 判定逻辑单元测试（纯 JVM，可直接 {@code gradlew :app:testDebugUnitTest}）。
@@ -244,6 +248,109 @@ public class PoseAnalyzerTest {
         assertTrue(timer.getSagWarnings() > 0);
     }
 
+    // ---------------- 靠墙蹲 ----------------
+
+    @Test
+    public void timesWallSit() {
+        WallSitTimer timer = new WallSitTimer(null);
+        long ts = 0;
+        for (int i = 0; i < 8; i++) {          // 站起来
+            timer.process(wallSit(ts, 0.25f));
+            ts += FPS_STEP_MS;
+        }
+        for (int i = 0; i < 45; i++) {         // 标准靠墙蹲约 3 秒
+            timer.process(wallSit(ts, 0f));
+            ts += FPS_STEP_MS;
+        }
+        for (int i = 0; i < 15; i++) {         // 站起来
+            timer.process(wallSit(ts, 0.25f));
+            ts += FPS_STEP_MS;
+        }
+        long best = timer.getBestHoldMs();
+        assertTrue("best=" + best, best >= 2400 && best <= 3200);
+        assertEquals(1, timer.getAttempts());
+        assertTrue(timer.getStability() > 0.8f);
+    }
+
+    @Test
+    public void wallSitRejectsHighHips() {
+        WallSitTimer timer = new WallSitTimer(null);
+        long ts = 0;
+        for (int i = 0; i < 60; i++) {          // 大腿没水平，等于半站着
+            timer.process(wallSit(ts, 0.10f));   // 髋部抬高 ≈0.36×躯干长度 > 0.30
+            ts += FPS_STEP_MS;
+        }
+        assertEquals(0, timer.getBestHoldMs());
+        assertEquals(0, timer.getAttempts());
+    }
+
+    @Test
+    public void wallSitSurvivesShortWobble() {
+        WallSitTimer timer = new WallSitTimer(null);
+        long ts = 0;
+        for (int i = 0; i < 30; i++) {
+            timer.process(wallSit(ts, 0f));
+            ts += FPS_STEP_MS;
+        }
+        for (int i = 0; i < 4; i++) {           // 0.26 秒晃动（宽限期内）
+            timer.process(wallSit(ts, 0.25f));
+            ts += FPS_STEP_MS;
+        }
+        for (int i = 0; i < 20; i++) {
+            timer.process(wallSit(ts, 0f));
+            ts += FPS_STEP_MS;
+        }
+        assertTrue("best=" + timer.getBestHoldMs(), timer.getBestHoldMs() >= 3000);
+        assertEquals(1, timer.getAttempts());
+    }
+
+    // ---------------- 跑步计步 ----------------
+
+    @Test
+    public void countsRunningSteps() {
+        RunStepCounter counter = new RunStepCounter(null);
+        long ts = 0;
+        // 每侧保持 5 帧（约 330ms 一步 → 180 步/分），共 4 个来回
+        for (int cycle = 0; cycle < 4; cycle++) {
+            for (int i = 0; i < 5; i++) {
+                counter.process(running(ts, 0.16f, 0f));
+                ts += FPS_STEP_MS;
+            }
+            for (int i = 0; i < 5; i++) {
+                counter.process(running(ts, 0f, 0.16f));
+                ts += FPS_STEP_MS;
+            }
+        }
+        assertTrue("steps=" + counter.getGoodReps(), counter.getGoodReps() >= 6);
+        float cadence = counter.getCadence();
+        assertTrue("cadence=" + cadence, cadence > 150 && cadence < 220);
+        assertEquals(counter.getGoodReps() + " 步", counter.getScoreText());
+    }
+
+    @Test
+    public void standingDoesNotCountSteps() {
+        RunStepCounter counter = new RunStepCounter(null);
+        long ts = 0;
+        for (int i = 0; i < 60; i++) {
+            counter.process(standing(ts));
+            ts += FPS_STEP_MS;
+        }
+        assertEquals(0, counter.getGoodReps());
+        assertFalse(counter.hasResult());
+    }
+
+    @Test
+    public void highFrequencyJitterIsNotCounted() {
+        RunStepCounter counter = new RunStepCounter(null);
+        long ts = 0;
+        for (int i = 0; i < 80; i++) {
+            boolean left = i % 2 == 0;
+            counter.process(running(ts, left ? 0.16f : 0f, left ? 0f : 0.16f));
+            ts += 40;
+        }
+        assertTrue("steps=" + counter.getGoodReps(), counter.getGoodReps() <= 3);
+    }
+
     // ---------------- 倒立 ----------------
 
     @Test
@@ -415,10 +522,15 @@ public class PoseAnalyzerTest {
         assertEquals(ExerciseType.PLANK, ExerciseType.fromKey("plank"));
         assertEquals(ExerciseType.SQUAT, ExerciseType.fromKey("squat"));
         assertEquals(ExerciseType.PULLUP, ExerciseType.fromKey("pullup"));
+        assertEquals(ExerciseType.WALL_SIT, ExerciseType.fromKey("wall_sit"));
+        assertEquals(ExerciseType.RUNNING, ExerciseType.fromKey("running"));
         assertEquals(ExerciseType.PUSHUP, ExerciseType.fromKey("unknown"));
-        assertEquals(8, ExerciseType.values().length);
+        assertEquals(10, ExerciseType.values().length);
         assertTrue(ExerciseType.PLANK.isTimerExercise());
         assertFalse(ExerciseType.SQUAT.isTimerExercise());
         assertTrue(ExerciseType.WALL_HANDSTAND.isWallExercise());
+        assertTrue(ExerciseType.WALL_SIT.isTimerExercise());
+        assertEquals("步", ExerciseType.RUNNING.getUnitLabel());
+        assertFalse(ExerciseType.RUNNING.isTimerExercise());
     }
 }

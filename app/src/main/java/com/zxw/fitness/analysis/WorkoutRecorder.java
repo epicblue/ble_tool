@@ -74,6 +74,9 @@ public class WorkoutRecorder implements ExerciseAnalyzer, RepListener, HoldListe
         if (type == ExerciseType.PLANK) {
             return new PlankTimer(this);
         }
+        if (type == ExerciseType.WALL_SIT) {
+            return new WallSitTimer(this);
+        }
         return new HandstandTimer(type, this);
     }
 
@@ -84,6 +87,9 @@ public class WorkoutRecorder implements ExerciseAnalyzer, RepListener, HoldListe
         }
         if (type == ExerciseType.PULLUP) {
             return new PullUpCounter(this);
+        }
+        if (type == ExerciseType.RUNNING) {
+            return new RunStepCounter(this);
         }
         return new PushUpCounter(type, variant, this);
     }

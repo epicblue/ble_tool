@@ -8,7 +8,7 @@ import com.zxw.fitness.pose.PoseMath;
 import java.util.Locale;
 
 /**
- * 引体向上计数器（实验性）。
+ * 引体向上计数器。
  *
  * <p>没有可用的横杆检测，因此用"悬挂姿态 → 拉起"的状态机：</p>
  * <ul>

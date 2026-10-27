@@ -181,6 +181,10 @@ public class HistoryActivity extends Activity {
                 return "🏋";
             case PULLUP:
                 return "🧲";
+            case WALL_SIT:
+                return "🧱";
+            case RUNNING:
+                return "🏃";
             case PUSHUP:
             default:
                 return "💪";
@@ -231,15 +235,7 @@ public class HistoryActivity extends Activity {
                     ? ("hands".equals(session.getVariant()) ? " · 手撑凳" : " · 脚垫凳") : ""));
             holder.tvTime.setText(TimeUtils.formatFriendly(session.getStartedAt()));
 
-            String resultText;
-            if (type.isTimerExercise()) {
-                resultText = String.format(Locale.US, "%.1f 秒", session.getHoldMs() / 1000.0);
-            } else if (type == ExerciseType.BAD_PUSHUP) {
-                resultText = session.getBadReps() + " 次";
-            } else {
-                resultText = session.getReps() + " 次";
-            }
-            holder.tvResult.setText(resultText);
+            holder.tvResult.setText(session.getResultText());
 
             boolean hasVideo = false;
             if (session.hasVideoReplay()) {
