@@ -66,9 +66,9 @@ public class WorkoutRecorder implements ExerciseAnalyzer, RepListener, HoldListe
         this.session = session;
         this.recordPose = recordPose;
         this.listener = listener;
-        session.setAlgorithmVersion(AlgorithmVersion.CURRENT);
-        session.setTimelineFile(null);
         ExerciseType type = session.getExerciseType();
+        session.setAlgorithmVersion(AlgorithmVersion.forExercise(type));
+        session.setTimelineFile(null);
         smoother = new PoseSmoother();
         if (type.isTimerExercise()) {
             HoldAnalyzer analyzer = createHoldAnalyzer(type);
@@ -101,6 +101,9 @@ public class WorkoutRecorder implements ExerciseAnalyzer, RepListener, HoldListe
         // 这里用 if-else 而不是 switch(R.id)：保持与项目里 AGP 8 的写法习惯一致
         if (type == ExerciseType.SQUAT) {
             return new SquatCounter(this);
+        }
+        if (type == ExerciseType.PIKE_PUSHUP) {
+            return new PikePushUpCounter(this);
         }
         if (type == ExerciseType.PULLUP) {
             return new PullUpCounter(this);

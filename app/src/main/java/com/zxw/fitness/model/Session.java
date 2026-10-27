@@ -241,6 +241,11 @@ public class Session {
         return reps;
     }
 
+    /** 合并动作卡片的最佳成绩：旧“不标准模式”也只能取其原有的有效次数。 */
+    public double getCatalogBestValue() {
+        return getExerciseType() == ExerciseType.BAD_PUSHUP ? reps : getResultValue();
+    }
+
     /** 用于列表展示的结果文案，例如 "12 次"、"48.6 秒"、"86 步"。 */
     public String getResultText() {
         ExerciseType type = getExerciseType();
@@ -259,6 +264,9 @@ public class Session {
                         totalHoldMs / 1000.0, holdMs / 1000.0);
             }
             return "最长单组 " + getResultText() + "（累计未记录）";
+        }
+        if (getExerciseType() == ExerciseType.BAD_PUSHUP) {
+            return "不标准 " + getResultText() + "（旧记录）";
         }
         return getResultText();
     }

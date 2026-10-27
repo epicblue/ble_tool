@@ -121,7 +121,7 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_CREATE);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
-        exerciseType = ExerciseType.fromKey(getIntent().getStringExtra(EXTRA_EXERCISE));
+        exerciseType = ExerciseType.fromKey(getIntent().getStringExtra(EXTRA_EXERCISE)).catalogType();
         variant = getIntent().getStringExtra(EXTRA_VARIANT);
         user = UserStore.getCurrent(this);
 

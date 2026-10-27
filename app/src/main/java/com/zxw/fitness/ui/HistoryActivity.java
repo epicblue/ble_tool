@@ -106,7 +106,7 @@ public class HistoryActivity extends Activity {
     private static ExerciseType typeForKey(String key) {
         if (key != null) {
             for (ExerciseType type : ExerciseType.values()) {
-                if (type.getKey().equals(key)) return type;
+                if (type.getKey().equals(key)) return type.catalogType();
             }
         }
         return null;
@@ -115,7 +115,7 @@ public class HistoryActivity extends Activity {
     private void buildChips() {
         chipGroup.removeAllViews();
         addChip("全部", null);
-        for (ExerciseType type : ExerciseType.values()) addChip(type.getTitle(), type);
+        for (ExerciseType type : ExerciseType.selectableValues()) addChip(type.getTitle(), type);
         updateChipStyles();
     }
 
@@ -163,7 +163,9 @@ public class HistoryActivity extends Activity {
         allSessions.addAll(SessionStore.loadAll(this, user.getId()));
         sessions.clear();
         for (Session session : allSessions) {
-            if (filter == null || session.getExerciseType() == filter) sessions.add(session);
+            if (filter == null || ExerciseType.sameCatalog(session.getExerciseKey(), filter.getKey())) {
+                sessions.add(session);
+            }
         }
         growth = HistoryGrowth.from(allSessions, System.currentTimeMillis(), TimeZone.getDefault());
         tvSubtitle.setText(String.format(Locale.CHINA, "%s %s · %d 条足迹%s",
@@ -220,6 +222,7 @@ public class HistoryActivity extends Activity {
             case HANDSTAND: return "🤸";
             case WALL_HANDSTAND: return "🧗";
             case CHAIR_PUSHUP: return "🪑";
+            case PIKE_PUSHUP: return "🔺";
             case BAD_PUSHUP: return "💪";
             case PLANK: return "🧘";
             case SQUAT: return "🏋";
@@ -400,7 +403,7 @@ public class HistoryActivity extends Activity {
                 holder.tvThumbIcon.setVisibility(View.VISIBLE);
                 holder.tvThumbIcon.setText(iconFor(type));
             }
-            String title = type.getTitle() + (type == ExerciseType.CHAIR_PUSHUP
+            String title = type.historyTitle() + (type == ExerciseType.CHAIR_PUSHUP
                     ? ("hands".equals(session.getVariant()) ? " · 手撑凳" : " · 脚垫凳") : "");
             String time = TimeUtils.formatFriendly(session.getStartedAt())
                     + (session.hasPersonalCalibration() ? " · 个人目标" : "");
@@ -412,7 +415,8 @@ public class HistoryActivity extends Activity {
                         session.getTotalHoldMs() / 1000.0, session.getHoldMs() / 1000.0)
                         : "最长 " + session.getResultText());
             } else {
-                holder.tvResult.setText(session.getResultText());
+                holder.tvResult.setText((type == ExerciseType.BAD_PUSHUP ? "不标准 " : "")
+                        + session.getResultText());
             }
 
             boolean hasVideo = mediaExists(session, session.getVideoFile());

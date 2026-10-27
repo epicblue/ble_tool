@@ -86,7 +86,7 @@ public class ProfileActivity extends Activity {
         if (settings.isEmpty()) {
             new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_DARK)
                     .setTitle(current.getName() + " · 个人校准")
-                    .setMessage("尚未设置个人目标。开始俯卧撑、折凳俯卧撑、深蹲或引体向上后，"
+                    .setMessage("尚未设置个人目标。开始俯卧撑、折凳俯卧撑、折刀俯卧撑、深蹲或引体向上后，"
                             + "保持在当前能做到的最好位置，点击训练页的「个人校准 +1」。")
                     .setPositiveButton("知道了", null).show();
             return;

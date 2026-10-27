@@ -94,7 +94,8 @@ public final class HistoryGrowth {
                 if (session == null) continue;
                 count++;
                 String key = session.getExerciseKey();
-                if (isKnownExercise(key)) types.add(key);
+                ExerciseType type = ExerciseType.findByKey(key);
+                if (type != null) types.add(type.catalogType().getKey());
                 long time = session.getStartedAt();
                 if (time > 0 && time <= nowMs) {
                     recordDate.setTimeInMillis(time);
@@ -121,14 +122,6 @@ public final class HistoryGrowth {
         badges.add(new Badge("🌈", "花样探索", "尝试并保存 3 种不同动作", types.size(), 3));
         badges.add(new Badge("⭐", "闪亮足迹", "在 5 个不同的日子留下记录", dates.size(), 5));
         return new HistoryGrowth(count, dates.size(), types.size(), recent, days, badges);
-    }
-
-    private static boolean isKnownExercise(String key) {
-        if (key == null) return false;
-        for (ExerciseType type : ExerciseType.values()) {
-            if (type.getKey().equals(key)) return true;
-        }
-        return false;
     }
 
     private static String dateKey(Calendar date) {

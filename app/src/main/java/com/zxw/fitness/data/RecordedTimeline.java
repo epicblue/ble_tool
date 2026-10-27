@@ -148,7 +148,7 @@ public final class RecordedTimeline {
         try (DataInputStream in = new DataInputStream(new CheckedInputStream(
                 new BufferedInputStream(new FileInputStream(cache), 16 * 1024), checksum))) {
             if (in.readInt() != MAGIC || in.readInt() != FORMAT
-                    || !AlgorithmVersion.CURRENT.equals(in.readUTF())
+                    || !session.getAlgorithmVersion().equals(in.readUTF())
                     || in.readLong() != session.getId()) return null;
             List<PoseFrame> poses = poseLog.getFrames();
             List<FrameState> states = new ArrayList<>();

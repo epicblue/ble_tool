@@ -31,8 +31,22 @@ import java.util.Map;
  */
 public class ExerciseListActivity extends Activity {
 
-    private static final ExerciseType[] TYPES = ExerciseType.values();
-    private static final String[] EMOJIS = {"🤸", "🧗", "🪑", "💪", "⚠️", "🧘", "🏋", "🧲", "🧱", "🏃"};
+    private static final ExerciseType[] TYPES = ExerciseType.selectableValues();
+
+    private static String iconFor(ExerciseType type) {
+        switch (type) {
+            case HANDSTAND: return "🤸";
+            case WALL_HANDSTAND: return "🧗";
+            case CHAIR_PUSHUP: return "🪑";
+            case PIKE_PUSHUP: return "🔺";
+            case PLANK: return "🧘";
+            case SQUAT: return "🏋";
+            case PULLUP: return "🧲";
+            case WALL_SIT: return "🧱";
+            case RUNNING: return "🏃";
+            default: return "💪";
+        }
+    }
 
     private UserProfile currentUser;
     private ExerciseAdapter adapter;
@@ -96,16 +110,17 @@ public class ExerciseListActivity extends Activity {
         Map<String, Stats> map = new HashMap<>();
         for (Session s : sessions) {
             String key = s.getExerciseKey();
-            if (key == null) {
-                continue;
-            }
+            if (key == null) continue;
+            ExerciseType recorded = ExerciseType.findByKey(key);
+            if (recorded != null) key = recorded.catalogType().getKey();
             Stats stats = map.get(key);
             if (stats == null) {
                 stats = new Stats();
                 map.put(key, stats);
             }
             stats.count++;
-            double value = s.getResultValue();
+            // 旧“不标准”模式的主成绩是待调整次数；合并后最佳值仍只比较有效次数。
+            double value = s.getCatalogBestValue();
             stats.best = Math.max(stats.best, value);
             if (!Float.isNaN(s.getStability())) {
                 stats.stability = Math.max(stats.stability, s.getStability());
@@ -168,7 +183,7 @@ public class ExerciseListActivity extends Activity {
         @Override
         public void onBindViewHolder(@NonNull Holder holder, int position) {
             final ExerciseType type = TYPES[position];
-            holder.tvEmoji.setText(EMOJIS[position]);
+            holder.tvEmoji.setText(iconFor(type));
             holder.tvTitle.setText(type.getTitle());
             holder.tvUnit.setText(type.isTimerExercise() ? "计时" : "计数");
             holder.tvDesc.setText(type.getDescription());
@@ -182,8 +197,6 @@ public class ExerciseListActivity extends Activity {
                 if (type.isTimerExercise()) {
                     bestText = String.format(Locale.US,
                             type == ExerciseType.WALL_SIT ? "最佳单组 %.1f 秒" : "最佳 %.1f 秒", s.best);
-                } else if (type == ExerciseType.BAD_PUSHUP) {
-                    bestText = String.format(Locale.US, "最多不标准 %d 次", (int) s.best);
                 } else {
                     bestText = String.format(Locale.US, "最佳 %d %s", (int) s.best,
                             type.getUnitLabel());

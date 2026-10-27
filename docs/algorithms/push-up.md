@@ -1,6 +1,6 @@
 # 俯卧撑算法
 
-> [算法索引](README.md) · [人体骨架](pose-estimation.md) · 类型 `PUSHUP`；主成绩为有效次数。折凳和不标准模式分别见[折凳](chair-push-up.md)、[不标准俯卧撑](bad-push-up.md)。以下阈值为未启用个人目标时的代码值。
+> [算法索引](README.md) · [人体骨架](pose-estimation.md) · 类型 `PUSHUP`；主成绩为有效次数。折凳和折刀分别见[折凳](chair-push-up.md)、[折刀](pike-push-up.md)；不标准独立入口已移除，其[旧记录](bad-push-up.md)仍可回放。以下阈值为未启用个人目标时的代码值。
 
 ## 输入与输出
 

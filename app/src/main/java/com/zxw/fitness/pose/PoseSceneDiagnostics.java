@@ -64,8 +64,15 @@ public final class PoseSceneDiagnostics {
         if (!leftTorso && !rightTorso) {
             return new PoseSceneResult(PoseSceneResult.Quality.WARNING, count, JOINTS.length * 2, "肩和髋需要同一侧同时入镜");
         }
+        if (type == ExerciseType.PIKE_PUSHUP
+                && !sideComplete(frame, width, height, pixels, 0, SHOULDER, ELBOW, WRIST, HIP, KNEE, ANKLE)
+                && !sideComplete(frame, width, height, pixels, 1, SHOULDER, ELBOW, WRIST, HIP, KNEE, ANKLE)) {
+            return new PoseSceneResult(PoseSceneResult.Quality.WARNING, count, JOINTS.length * 2,
+                    "折刀需要同侧肩、肘、腕、髋、膝、踝同时入镜");
+        }
         if (type == ExerciseType.PUSHUP || type == ExerciseType.CHAIR_PUSHUP
-                || type == ExerciseType.BAD_PUSHUP || type == ExerciseType.PULLUP) {
+                || type == ExerciseType.BAD_PUSHUP || type == ExerciseType.PIKE_PUSHUP
+                || type == ExerciseType.PULLUP) {
             if (!sideComplete(frame, width, height, pixels, 0, SHOULDER, ELBOW, WRIST)
                     && !sideComplete(frame, width, height, pixels, 1, SHOULDER, ELBOW, WRIST)) {
                 return new PoseSceneResult(PoseSceneResult.Quality.WARNING, count, JOINTS.length * 2, "同侧肩、肘、腕未完整入镜，角度可能不稳定");
@@ -112,7 +119,7 @@ public final class PoseSceneDiagnostics {
 
     private static int[] requiredParts(ExerciseType type) {
         if (type == ExerciseType.PUSHUP || type == ExerciseType.CHAIR_PUSHUP
-                || type == ExerciseType.BAD_PUSHUP) return PUSH_PARTS;
+                || type == ExerciseType.BAD_PUSHUP || type == ExerciseType.PIKE_PUSHUP) return PUSH_PARTS;
         if (type == ExerciseType.SQUAT || type == ExerciseType.WALL_SIT) return LEG_PARTS;
         if (type == ExerciseType.PULLUP) return PULL_PARTS;
         if (type == ExerciseType.PLANK) return PLANK_PARTS;

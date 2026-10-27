@@ -28,7 +28,12 @@ public enum ExerciseType {
             "手掌在肩下、身体一条直线；胸口下降到肘部约 90° 再撑起。",
             false, false),
 
-    /** 不标准俯卧撑：统计"不标准次数"（幅度不足、塌腰/撅臀、跪姿等）。 */
+    /** 折刀俯卧撑：保持倒 V 形，屈臂下放后撑回。 */
+    PIKE_PUSHUP("pike_pushup", "折刀俯卧撑", "次", Unit.COUNT,
+            "双手与双脚支撑、髋部抬高呈倒 V；屈肘下放上身，再撑回起始位。建议侧对镜头并保持全身入镜。",
+            false, false),
+
+    /** 仅供读取旧记录，不再作为独立训练项目。 */
     BAD_PUSHUP("bad_pushup", "不标准俯卧撑", "次", Unit.COUNT,
             "身体未保持一条直线（塌腰/撅臀）或下降幅度不足，单独计数提醒纠正。",
             false, false),
@@ -114,7 +119,7 @@ public enum ExerciseType {
     /** 支持以一次往返的个人幅度作为目标；计时和步数动作暂不使用此校准。 */
     public boolean supportsPersonalCalibration() {
         return this == PUSHUP || this == CHAIR_PUSHUP || this == BAD_PUSHUP
-                || this == SQUAT || this == PULLUP;
+                || this == PIKE_PUSHUP || this == SQUAT || this == PULLUP;
     }
 
     /** 是否为靠墙类动作（需要额外的墙面判定）。 */
@@ -122,14 +127,35 @@ public enum ExerciseType {
         return wall;
     }
 
+    /** 旧不标准模式仍可读取，但训练入口和历史筛选不再单列。 */
+    public ExerciseType catalogType() {
+        return this == BAD_PUSHUP ? PUSHUP : this;
+    }
+
+    public String historyTitle() {
+        return this == BAD_PUSHUP ? "俯卧撑 · 旧不标准记录" : title;
+    }
+
+    public static ExerciseType[] selectableValues() {
+        java.util.ArrayList<ExerciseType> types = new java.util.ArrayList<>();
+        for (ExerciseType type : values()) if (type != BAD_PUSHUP) types.add(type);
+        return types.toArray(new ExerciseType[0]);
+    }
+
+    /** 不把未知键误当作俯卧撑，用于统计和筛选；读取老接口仍使用 fromKey 回退。 */
+    public static ExerciseType findByKey(String key) {
+        if (key != null) for (ExerciseType type : values()) if (type.key.equals(key)) return type;
+        return null;
+    }
+
+    /** 两个已知记录键是否属于同一个可选动作；未知键不会误入俯卧撑。 */
+    public static boolean sameCatalog(String left, String right) {
+        ExerciseType a = findByKey(left), b = findByKey(right);
+        return a != null && b != null && a.catalogType() == b.catalogType();
+    }
+
     public static ExerciseType fromKey(String key) {
-        if (key != null) {
-            for (ExerciseType type : values()) {
-                if (type.key.equals(key)) {
-                    return type;
-                }
-            }
-        }
-        return PUSHUP;
+        ExerciseType type = findByKey(key);
+        return type == null ? PUSHUP : type;
     }
 }

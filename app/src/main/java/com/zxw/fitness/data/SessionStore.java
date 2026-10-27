@@ -100,7 +100,9 @@ public final class SessionStore {
         }
         List<Session> filtered = new ArrayList<>();
         for (Session s : all) {
-            if (s.getExerciseType() == type) {
+            if (type == ExerciseType.BAD_PUSHUP
+                    ? ExerciseType.findByKey(s.getExerciseKey()) == ExerciseType.BAD_PUSHUP
+                    : ExerciseType.sameCatalog(s.getExerciseKey(), type.getKey())) {
                 filtered.add(s);
             }
         }

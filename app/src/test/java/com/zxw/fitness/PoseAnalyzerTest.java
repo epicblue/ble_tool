@@ -751,7 +751,9 @@ public class PoseAnalyzerTest {
         assertEquals(ExerciseType.WALL_SIT, ExerciseType.fromKey("wall_sit"));
         assertEquals(ExerciseType.RUNNING, ExerciseType.fromKey("running"));
         assertEquals(ExerciseType.PUSHUP, ExerciseType.fromKey("unknown"));
-        assertEquals(10, ExerciseType.values().length);
+        assertEquals(11, ExerciseType.values().length); // 含只读旧模式
+        assertEquals(10, ExerciseType.selectableValues().length);
+        assertEquals(ExerciseType.PIKE_PUSHUP, ExerciseType.fromKey("pike_pushup"));
         assertTrue(ExerciseType.PLANK.isTimerExercise());
         assertFalse(ExerciseType.SQUAT.isTimerExercise());
         assertTrue(ExerciseType.WALL_HANDSTAND.isWallExercise());

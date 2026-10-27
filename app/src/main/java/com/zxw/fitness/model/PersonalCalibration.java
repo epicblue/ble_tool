@@ -53,10 +53,10 @@ public final class PersonalCalibration {
     public float getStartingAngle() { return startingAngle; }
     public float getCapturedAngle() { return capturedAngle; }
     public float getCapturedMovement() { return capturedMovement; }
-    /** 俯卧撑为允许的髋偏移比例；深蹲为允许的躯干前倾角。 */
+    /** 俯卧撑为髋偏移比例；深蹲为前倾角；折刀为最大肩髋踝夹角。 */
     public float getMaxForm() { return maxForm; }
     public float getMinHipAngle() { return minHipAngle; }
-    /** 深蹲的最小髋移动量、引体向上的最小上升量。 */
+    /** 深蹲、引体和折刀的最小相对移动量。 */
     public float getMinMovement() { return minMovement; }
     public boolean isKneelingAllowed() { return allowKneeling; }
     public boolean hasFormWarning() { return formWarning; }
@@ -72,7 +72,8 @@ public final class PersonalCalibration {
     }
 
     public static float defaultStartingAngle(ExerciseType type) {
-        return type == ExerciseType.SQUAT ? 155f : type == ExerciseType.PULLUP ? 150f : 152f;
+        return type == ExerciseType.SQUAT ? 155f
+                : type == ExerciseType.PULLUP || type == ExerciseType.PIKE_PUSHUP ? 150f : 152f;
     }
 
     /** 极限起始角小于标准到位角时仍留出有意义的行程参考。 */
@@ -96,7 +97,11 @@ public final class PersonalCalibration {
                 && finite(capturedMovement) && capturedMovement >= 0f && capturedMovement <= 10f
                 && finite(maxForm) && maxForm >= 0f && maxForm <= 180f
                 && finite(minHipAngle) && minHipAngle >= 0f && minHipAngle <= 180f
-                && finite(minMovement) && minMovement >= 0f && minMovement <= 10f;
+                && finite(minMovement) && minMovement >= 0f && minMovement <= 10f
+                && (type != ExerciseType.PIKE_PUSHUP || (!allowKneeling
+                && maxForm >= 145f && maxForm <= 165f
+                && minMovement >= 0.02f && minMovement <= 0.10f
+                && capturedMovement >= 0.025f));
     }
 
     private static boolean finite(float value) {
@@ -107,7 +112,7 @@ public final class PersonalCalibration {
         if (type == ExerciseType.CHAIR_PUSHUP) {
             return type.getTitle() + ("hands".equals(variant) ? " · 手撑凳" : " · 脚垫凳");
         }
-        return type == null ? "未知动作" : type.getTitle();
+        return type == null ? "未知动作" : type.historyTitle();
     }
 
     /** 显示的是已保存的个人目标及采样值，方便查看和重置。 */
@@ -131,6 +136,14 @@ public final class PersonalCalibration {
                     startingAngle, Math.max(0f, startingAngle - (startingAngle
                             - referenceAngle(startingAngle, 95f)) * targetDepth),
                     minMovement, capturedAngle, capturedMovement, extra);
+        }
+        if (type == ExerciseType.PIKE_PUSHUP) {
+            return String.format(Locale.CHINA,
+                    "起始肘角 %.1f°；肘角≤%.1f°，肩腕相对高度比例下降至少 %.2f，肩髋踝角≤%.1f°。"
+                            + "\n采样：肘角 %.1f°，比例下降 %.2f%s",
+                    startingAngle, Math.max(0f, startingAngle - (startingAngle
+                            - referenceAngle(startingAngle, 100f)) * targetDepth),
+                    minMovement, maxForm, capturedAngle, capturedMovement, extra);
         }
         float fullAngle = type == ExerciseType.CHAIR_PUSHUP && "hands".equals(variant)
                 ? 106f : 100f;

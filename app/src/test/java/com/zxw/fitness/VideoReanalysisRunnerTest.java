@@ -366,4 +366,29 @@ public class VideoReanalysisRunnerTest {
             assertTrue(f.sourceClosed);
         }
     }
+    @Test public void pikeVideoFramesFeedItsOwnDetectorAndPreserveSavedHistory() throws Exception {
+        Session saved = session(ExerciseType.PIKE_PUSHUP);
+        FakeFactory fake = new FakeFactory();
+        fake.duration = 4100;
+        fake.poses = t -> {
+            int i = (int) (t / 100L);
+            float angle;
+            if (i < 7) angle = 170f;
+            else if (i < 17) angle = 170f - (i - 6) * 8f;
+            else if (i < 23) angle = 90f;
+            else if (i < 33) angle = 90f + (i - 22) * 8f;
+            else angle = 170f;
+            return PikePushUpTest.pike(t, angle, PikePushUpTest.drop(angle));
+        };
+        VideoPoseReanalysis result = VideoReanalysisRunner.run(fake, saved, null, null);
+        assertEquals(41, result.size());
+        assertTrue(fake.sourceClosed && fake.engineClosed);
+        assertEquals(Boolean.FALSE, fake.everyFrame);
+        assertEquals(1, result.getTimeline().getGoodRepsAt(result.size() - 1));
+        assertEquals(0, result.getTimeline().getBadRepsAt(result.size() - 1));
+        assertEquals("视频重新识别不能覆盖原来的训练汇总", 73, saved.getReps());
+        assertEquals("original.mp4", saved.getVideoFile());
+        assertEquals("old-pose.dat", saved.getPoseFile());
+    }
+
 }

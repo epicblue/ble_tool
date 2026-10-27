@@ -152,7 +152,9 @@ public class ReplayActivity extends Activity implements VideoExporter.Listener {
         }
         // 同动作类型的记录组成播放列表，方便连续回看
         for (Session s : all) {
-            if (s.getExerciseType() == target.getExerciseType()) {
+            if (ExerciseType.sameCatalog(s.getExerciseKey(), target.getExerciseKey())
+                    || (target.getExerciseKey() != null && ExerciseType.findByKey(target.getExerciseKey()) == null
+                    && target.getExerciseKey().equals(s.getExerciseKey()))) {
                 playlist.add(s);
             }
         }
@@ -301,14 +303,15 @@ public class ReplayActivity extends Activity implements VideoExporter.Listener {
         durationMs = Math.max(session.getDurationMs(),
                 poseLog != null ? poseLog.getDurationMs() : 0);
 
-        tvTitle.setText(type.getTitle()
+        tvTitle.setText(type.historyTitle()
                 + (type == ExerciseType.CHAIR_PUSHUP
                 ? ("hands".equals(session.getVariant()) ? " · 手撑凳" : " · 脚垫凳") : ""));
         String stability = Float.isNaN(session.getStability())
                 ? "" : " · 稳定度 " + Math.round(session.getStability() * 100) + "%";
         String scoreLabel = type == ExerciseType.WALL_SIT ? " · 最长 " : " · 成绩 ";
         tvSubtitle.setText(TimeUtils.formatFriendly(session.getStartedAt())
-                + scoreLabel + session.getResultText() + stability
+                + scoreLabel + (type == ExerciseType.BAD_PUSHUP ? "不标准 " : "")
+                + session.getResultText() + stability
                 + (session.hasPersonalCalibration() ? " · 个人目标" : ""));
         updateSummaryLabels();
         updateExportButton();
@@ -512,7 +515,7 @@ public class ReplayActivity extends Activity implements VideoExporter.Listener {
             boolean canShowTotal = timeline != null || session.hasTotalHoldMs();
             tvUnit.setText(canShowTotal ? HoldScore.unitLabel(type) : "秒（最长）");
         } else {
-            tvUnit.setText(type.getUnitLabel());
+            tvUnit.setText(type == ExerciseType.BAD_PUSHUP ? "次（旧不标准）" : type.getUnitLabel());
         }
         tvRecordedSummary.setVisibility(View.VISIBLE);
         tvRecordedSummary.setText("历史保存：" + session.getResultSummary()
@@ -565,7 +568,7 @@ public class ReplayActivity extends Activity implements VideoExporter.Listener {
     private String versionLabel() {
         String recorded = session.getAlgorithmVersion();
         return "算法：录制 " + (recorded == null || recorded.isEmpty() ? "旧记录未记录" : recorded)
-                + " / 当前 " + AlgorithmVersion.CURRENT;
+                + " / 当前 " + AlgorithmVersion.forExercise(session.getExerciseType());
     }
 
     private final Runnable tick = new Runnable() {

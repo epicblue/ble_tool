@@ -1,13 +1,12 @@
 # 判定算法离线实验台
 
-`app/src/main/java/com/zxw/fitness/analysis` 与 `pose` 里所有阈值，都在这里有一份
-**逐行对应的 Python 复刻**，目的是在没有手机、没有 Android SDK 的机器上也能：
+这里保留部分 `analysis` 与 `pose` 阈值的 **Python 实验镜像**，目的是在没有手机、没有 Android SDK 的机器上也能：
 
 - 用合成轨迹验证判定逻辑（回归）；
 - 量化"机位/帧率/遮挡/横滚"变化对结果的影响（敏感性实验）；
 - 调参时先在这里试，避免真机来回装包。
 
-> 这不是 App 的依赖，只在开发机跑。改 Java 里的阈值时**请同步改 `replica.py`**，
+> 这不是 App 的依赖，只在开发机跑。修改已镜像的 Java 判定器阈值时**请同步改 `replica.py`**，
 > 否则回归数字会与真机行为脱节（这本身也是一种告警）。
 
 ## 用法
@@ -36,4 +35,4 @@ python3 tools/algo_sim/experiments.py    # 输出 docs/algorithm-plan.md 里的�
 - 复刻里出现的"镜头横滚/横向压缩"只是几何变换，用来模拟机位，不是真实拍摄数据；
   真实准确率仍以真机录制为准（见 `docs/algorithm-plan.md` 第 4 节 ⑫）。
 
-深蹲的原始模型冻结恢复与版本缓存没有 Python 镜像，请运行 Java 的 `FrozenPoseRecoveryTest`、`RecordedTimelineTest` 和 `VideoReanalysisRunnerTest`。
+折刀俯卧撑、深蹲的原始模型冻结恢复与版本缓存没有 Python 镜像；请分别运行 Java 的 `PikePushUpTest`、`FrozenPoseRecoveryTest`、`RecordedTimelineTest` 和 `VideoReanalysisRunnerTest`。Python 的 119 条断言不覆盖折刀或历史合并。
