@@ -533,17 +533,16 @@ public class Ble_Activity extends BasActivity implements OnClickListener {
      */
     @Override
     public void onClick(View v) {
-        switch (v.getId()) {
-            case R.id.send_btn:
-                new sendDataThread();
-                break;
-            case R.id.button_group_reception:
-                receptionHex = receptionCheckBox.isChecked();
-                break;
-            case R.id.button_group_send:
-                sendHex = sendCheckBox.isChecked();
-                initEdit(sendHex);
-                break;
+        // 说明：AGP 8 起 R 中的资源 id 不再是编译期常量（android.nonFinalResIds 默认 true），
+        // 不能写成 switch (v.getId()) { case R.id.xxx: }，这里改用 if-else 等价实现。
+        int id = v.getId();
+        if (id == R.id.send_btn) {
+            new sendDataThread();
+        } else if (id == R.id.button_group_reception) {
+            receptionHex = receptionCheckBox.isChecked();
+        } else if (id == R.id.button_group_send) {
+            sendHex = sendCheckBox.isChecked();
+            initEdit(sendHex);
         }
     }
 

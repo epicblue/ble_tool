@@ -222,7 +222,19 @@ SDK Platform 34 没装：`Tools → SDK Manager → Android 34`，勾选 *SDK Pl
 说明 Android Studio 太旧（低于 Hedgehog）。升级 Studio，或改回 AGP 7.4.2 + Gradle 7.6.4 +
 JDK 17 这一组合（JDK 依旧是 17，不要用 8/11）。
 
-**⑥ 提示 `Could not install Gradle distribution` / wrapper 版本过旧**
+**⑥ `Ble_Activity.java:537: 需要常量表达式 / constant expression required`（`case R.id.xxx`）**
+AGP 8 起 `android.nonFinalResIds` 默认为 `true`，`R` 里的资源 id **不再是编译期常量**，
+所以 `switch (v.getId()) { case R.id.send_btn: ... }` 会报"需要常量表达式"。
+本项目已把 `Ble_Activity#onClick` 改成等价的 `if / else if`；以后新增代码同理，
+不要对 `R.id` 用 `switch`。若确实想保留 switch 写法，可在 `gradle.properties` 里加：
+
+```properties
+android.nonFinalResIds=false
+```
+
+（但 AGP 9 会移除该开关，建议直接用 if-else。）
+
+**⑦ 提示 `Could not install Gradle distribution` / wrapper 版本过旧**
 仓库里的 `gradle-wrapper.jar` 是 2019 年的老文件，正常情况下仍能下载 8.10.2；若报错，
 重新生成 wrapper（会同时更新 jar）：
 
