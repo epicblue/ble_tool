@@ -25,6 +25,7 @@ import androidx.lifecycle.LifecycleOwner;
 
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.mlkit.vision.common.InputImage;
+import com.google.mlkit.vision.common.PointF3D;
 import com.google.mlkit.vision.pose.Pose;
 import com.google.mlkit.vision.pose.PoseDetection;
 import com.google.mlkit.vision.pose.PoseDetector;
@@ -371,7 +372,9 @@ public class CameraController {
             }
             x[type] = landmark.getPosition().x;
             y[type] = landmark.getPosition().y;
-            z[type] = landmark.getPosition3D() != null ? landmark.getPosition3D().z : 0f;
+            // PointF3D 只提供 getter（PointF 才是公有字段），这里统一用方法访问
+            PointF3D position3D = landmark.getPosition3D();
+            z[type] = position3D != null ? position3D.getZ() : 0f;
             confidence[type] = landmark.getInFrameLikelihood();
         }
         return PoseFrame.of(timestampMs, x, y, z, confidence);

@@ -12,7 +12,7 @@
         android:layout_height="match_parent"
         android:background="@drawable/fit_bg_stage">
 
-        <com.zxw.fitness.ui.AspectVideoView
+        <com.zxw.fitness.ui.PoseVideoView
             android:id="@+id/videoView"
             android:layout_width="match_parent"
             android:layout_height="match_parent"

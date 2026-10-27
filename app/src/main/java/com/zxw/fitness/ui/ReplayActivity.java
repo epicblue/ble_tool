@@ -2,14 +2,11 @@ package com.zxw.fitness.ui;
 
 import android.app.Activity;
 import android.media.MediaPlayer;
-import android.media.PlaybackParams;
-import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
 import android.view.View;
-import android.widget.MediaController;
 import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -46,7 +43,7 @@ public class ReplayActivity extends Activity {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final List<Session> playlist = new ArrayList<>();
 
-    private AspectVideoView videoView;
+    private PoseVideoView videoView;
     private SkeletonOverlay overlay;
     private SeekBar seekBar;
     private TextView btnPlay;
@@ -229,7 +226,6 @@ public class ReplayActivity extends Activity {
         if (hasVideo) {
             videoView.setVisibility(View.VISIBLE);
             tvNoVideo.setVisibility(View.GONE);
-            videoView.setMediaController((MediaController) null);
             videoView.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
                 @Override
                 public void onPrepared(MediaPlayer mp) {
@@ -411,15 +407,9 @@ public class ReplayActivity extends Activity {
     }
 
     private void applyVideoSpeed() {
-        if (!hasVideo || !videoReady || Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
-            return;
-        }
-        try {
-            PlaybackParams params = new PlaybackParams();
-            params.setSpeed(speed);
-            videoView.setPlaybackParams(params);
-        } catch (Exception ignored) {
-            // 个别设备不支持调速，忽略即可
+        if (hasVideo && videoReady) {
+            // 真正的倍速由 PoseVideoView 内部的 MediaPlayer.setPlaybackParams 实现
+            videoView.setSpeed(speed);
         }
     }
 

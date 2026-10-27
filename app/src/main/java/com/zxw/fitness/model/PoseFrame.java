@@ -61,7 +61,8 @@ public class PoseFrame {
             LEFT_FOOT_INDEX, RIGHT_FOOT_INDEX
     };
 
-    private static final int SUBSET_INDEX[] = buildSubsetIndex();
+    /** 关键点下标 -> 录制数组中的下标（不在子集内为 -1）。 */
+    private static final int[] SUBSET_INDEX = buildSubsetIndex();
 
     private static int[] buildSubsetIndex() {
         int[] index = new int[LANDMARK_COUNT];
@@ -188,7 +189,11 @@ public class PoseFrame {
         return new PoseFrame(timestampMs, any, x, y, z, conf);
     }
 
+    /** 关键点在录制数组中的位置，不在 {@link #LANDMARK_SUBSET} 中时返回 -1。 */
     public static int subsetIndexOf(int landmark) {
-        return index[landmark];
+        if (landmark < 0 || landmark >= SUBSET_INDEX.length) {
+            return -1;
+        }
+        return SUBSET_INDEX[landmark];
     }
 }

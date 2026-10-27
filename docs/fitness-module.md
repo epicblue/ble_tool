@@ -108,7 +108,7 @@ int  viewHeight
 
 ## 5. 回放实现
 
-- 有视频：`VideoView`（`AspectVideoView` 保持宽高比）+ 覆盖层按 `videoView.getCurrentPosition()`
+- 有视频：`PoseVideoView`（`TextureView` + `MediaPlayer`，自行管理以便支持倍速，并按宽高比测量）+ 覆盖层按 `videoView.getCurrentPosition()`
   查骨架帧，保证画面与骨架同步；拖动进度条/倍速都会重新对齐。
 - 无视频：用 `SystemClock` 驱动时间轴，循环播放骨架动画。
 - `ReplayTimeline` 在打开记录时把骨架帧整体喂给判定器一遍，预先算出每一帧的计数/计时与提示，
@@ -127,7 +127,7 @@ com.zxw.fitness
 ├── data/       UserStore、SessionStore、PoseLog / PoseLogWriter
 ├── util/       TimeUtils
 └── ui/         ExerciseListActivity、TrainingActivity、ReplayActivity、HistoryActivity、
-                ProfileActivity、AspectVideoView
+                ProfileActivity、PoseVideoView
 ```
 
 复用的关键点：`CameraController` 只负责"相机 → PoseFrame"，
