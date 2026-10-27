@@ -18,7 +18,8 @@ CameraX ImageAnalysis（16:9 目标比例、保留最新帧）
   └─ 剔除画面外点 → 按最近传感器横滚角旋转
        → 逐点平滑、丢失保持、跳变暂拒/重捕获（深蹲另有一致横移恢复）
        → 帧间隔保护 → 各动作判定器
-       └─ 保存滤波后的 17 点及横滚角 → 骨架/视频回放
+       └─ 保存滤波后的 17 点及横滚角 → 录制骨架回放（可与新识别对比）
+原 MP4 → 按视频时间近似抽帧 → Accurate → 原始点 / 越界过滤与当前滤波 → 临时回放
 ```
 
 若预览、分析和录像三路绑定失败，代码尝试退化为预览 + 分析，可能没有视频。实际分析分辨率由 CameraX 协商，并非代码固定数值。模型输出的 33 点包括头面、肩肘腕、髋膝踝、脚跟和脚尖；日志只保存鼻及左右肩、肘、腕、髋、膝、踝、脚跟、脚尖共 **17 点**，不是 COCO 的另一套 17 点。
@@ -32,7 +33,8 @@ CameraX ImageAnalysis（16:9 目标比例、保留最新帧）
 - 动作输入在旋转前将越界或无效点的可信度置零；实时诊断仍查看原始帧，绘制时不画越界点。开启详细标记时显示绿点 ≥0.5、黄点 0.3–0.49；关闭后仅显示 ≥0.5 的基本骨架。紫圈表示训练滤波器正在等待该点的大跳变候选，不表示原始点已被修正。
 - `PreviewView` 和 `SkeletonOverlay` 都按 `FIT_CENTER` 居中适配；前摄骨架额外水平镜像。代码没有通过共同 `ViewPort` / CameraX 坐标变换明确统一预览与分析裁剪，机型差异可能导致偏移，**尚未证实在哪些设备发生**。
 - 识别异步完成后覆盖在独立刷新的预览上，没有按采集帧同步预览与骨架；推理慢或动作快时可能看见滞后。当前没有真实设备的延迟/FPS 基线。
-- v2 骨架文件存相对首骨架帧的时间、横滚角及 17 点；回放显示时逆旋转，判定仍使用对齐后的滤波帧。旧 v1 无横滚数据。视频启动与首骨架帧、前摄录像镜像仍需真机验证，历史日志也无法恢复当时的原始 33 点。
+- v2 骨架文件存相对首骨架帧的时间、横滚角及 17 点；录制骨架回放显示时逆旋转，判定仍使用对齐后的滤波帧。旧 v1 无横滚数据，历史日志也无法恢复当时的原始 33 点。视频与首骨架帧的起点、前摄录像镜像仍需真机验证。
+- 有视频时默认**从 MP4 重跑模型**：每 100ms 近似抽帧（长录像最多 350ms、最多 6000 帧），深蹲每张图找人、其他动作连续跟踪；默认显示新滤波骨架，可对照新原始与录制骨架。输出只存内存，不覆盖历史。新判定无按视频时刻对应的重力补偿，仅采用训练开始的个人目标，不重放组内校准点击；快动作、最近帧抽取及播放器 seek 会造成漏采或错位，成绩只供对比。设备的旋转、镜像与实际对齐仍需真机验证。
 
 ### 3.2 重力对齐
 
@@ -80,5 +82,5 @@ CameraX ImageAnalysis（16:9 目标比例、保留最新帧）
 
 - 相机和模型：[CameraController.java](../../app/src/main/java/com/zxw/fitness/camera/CameraController.java)、[app/build.gradle](../../app/build.gradle)；绘制：[SkeletonOverlay.java](../../app/src/main/java/com/zxw/fitness/camera/SkeletonOverlay.java)、[TrainingActivity.java](../../app/src/main/java/com/zxw/fitness/ui/TrainingActivity.java)。
 - 数据、几何与滤波：[PoseFrame.java](../../app/src/main/java/com/zxw/fitness/model/PoseFrame.java)、[PoseMath.java](../../app/src/main/java/com/zxw/fitness/pose/PoseMath.java)、[BodyMetrics.java](../../app/src/main/java/com/zxw/fitness/pose/BodyMetrics.java)、[PoseSmoother.java](../../app/src/main/java/com/zxw/fitness/pose/PoseSmoother.java)、[GravityAlign.java](../../app/src/main/java/com/zxw/fitness/pose/GravityAlign.java)。
-- 回放：[PoseLog.java](../../app/src/main/java/com/zxw/fitness/data/PoseLog.java)、[PoseLogWriter.java](../../app/src/main/java/com/zxw/fitness/data/PoseLogWriter.java)；合成测试：[PoseDiagnosticsTest.java](../../app/src/test/java/com/zxw/fitness/PoseDiagnosticsTest.java)、[PoseAnalyzerTest.java](../../app/src/test/java/com/zxw/fitness/PoseAnalyzerTest.java)。
+- 回放：[PoseLog.java](../../app/src/main/java/com/zxw/fitness/data/PoseLog.java)、[PoseLogWriter.java](../../app/src/main/java/com/zxw/fitness/data/PoseLogWriter.java)、[VideoPoseReanalyzer.java](../../app/src/main/java/com/zxw/fitness/camera/VideoPoseReanalyzer.java)、[VideoReanalysisRunner.java](../../app/src/main/java/com/zxw/fitness/analysis/VideoReanalysisRunner.java)；合成测试：[VideoReanalysisRunnerTest.java](../../app/src/test/java/com/zxw/fitness/VideoReanalysisRunnerTest.java)、[PoseDiagnosticsTest.java](../../app/src/test/java/com/zxw/fitness/PoseDiagnosticsTest.java)、[PoseAnalyzerTest.java](../../app/src/test/java/com/zxw/fitness/PoseAnalyzerTest.java)。
 - 真机验证应包含：深蹲站起时横移手机并比较两种检测模式、识别间隔和计数；静止及运动时左右肩标注误差、抖动与换侧；前/后摄的空间映射和镜像；同一片段实时、视频及骨架回放对齐。模型仍可能一直输出折叠骨架，不能把合成结果当作修复保证。合成回归和安全边界见[索引](README.md)。

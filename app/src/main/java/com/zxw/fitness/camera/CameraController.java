@@ -29,17 +29,12 @@ import androidx.lifecycle.LifecycleOwner;
 
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.mlkit.vision.common.InputImage;
-import com.google.mlkit.vision.common.PointF3D;
 import com.google.mlkit.vision.pose.Pose;
-import com.google.mlkit.vision.pose.PoseDetection;
 import com.google.mlkit.vision.pose.PoseDetector;
-import com.google.mlkit.vision.pose.PoseLandmark;
-import com.google.mlkit.vision.pose.accurate.AccuratePoseDetectorOptions;
 import com.zxw.fitness.model.PoseFrame;
 import com.zxw.fitness.pose.GravityAlign;
 
 import java.io.File;
-import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -250,12 +245,7 @@ public class CameraController {
     private PoseDetector createPoseDetector() {
         // 深蹲使用逐帧人物检测，不沿用可能已偏移的 STREAM 跟踪区域；
         // 代价是更多推理开销，实际帧率与恢复效果仍须真机验证。
-        int mode = detectPersonEveryFrame ? AccuratePoseDetectorOptions.SINGLE_IMAGE_MODE
-                : AccuratePoseDetectorOptions.STREAM_MODE;
-        AccuratePoseDetectorOptions options = new AccuratePoseDetectorOptions.Builder()
-                .setDetectorMode(mode)
-                .build();
-        return PoseDetection.getClient(options);
+        return PoseDetectorFactory.create(detectPersonEveryFrame);
     }
 
     /** 开始录像，返回 false 表示当前设备不支持录制或未就绪。 */
@@ -425,7 +415,7 @@ public class CameraController {
                             int w = rotation % 180 == 0 ? imageWidth : imageHeight;
                             int h = rotation % 180 == 0 ? imageHeight : imageWidth;
                             // ML Kit 返回像素；x/y 同除以画面宽，既便于显示又保留真实角度。
-                            PoseFrame displayFrame = toPoseFrame(pose, timestampMs, w);
+                            PoseFrame displayFrame = PoseFrameConverter.fromMlKit(pose, timestampMs, w);
                             // 画面外的推测点仅供诊断，不用于训练判定或个人校准。
                             PoseFrame boundedFrame = displayFrame.maskOutOfFrame(w, h);
                             float roll = rollDegrees;
@@ -454,31 +444,4 @@ public class CameraController {
         }
     }
 
-    private static PoseFrame toPoseFrame(Pose pose, long timestampMs, int imageWidth) {
-        if (pose == null) {
-            return PoseFrame.empty(timestampMs);
-        }
-        List<PoseLandmark> landmarks = pose.getAllPoseLandmarks();
-        if (landmarks.isEmpty()) {
-            return PoseFrame.empty(timestampMs);
-        }
-        float[] x = new float[PoseFrame.LANDMARK_COUNT];
-        float[] y = new float[PoseFrame.LANDMARK_COUNT];
-        float[] z = new float[PoseFrame.LANDMARK_COUNT];
-        float[] confidence = new float[PoseFrame.LANDMARK_COUNT];
-        for (PoseLandmark landmark : landmarks) {
-            int type = landmark.getLandmarkType();
-            if (type < 0 || type >= PoseFrame.LANDMARK_COUNT) {
-                continue;
-            }
-            x[type] = landmark.getPosition().x;
-            y[type] = landmark.getPosition().y;
-            // PointF3D 只提供 getter（PointF 才是公有字段），这里统一用方法访问
-            PointF3D position3D = landmark.getPosition3D();
-            z[type] = position3D != null ? position3D.getZ() : 0f;
-            confidence[type] = landmark.getInFrameLikelihood();
-        }
-        return PoseFrame.fromPixelCoordinates(timestampMs, x, y, z, confidence,
-                Math.max(1, imageWidth));
-    }
 }

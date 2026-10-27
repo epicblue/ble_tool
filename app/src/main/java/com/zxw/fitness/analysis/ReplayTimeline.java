@@ -12,7 +12,7 @@ import java.util.Comparator;
 import java.util.List;
 
 /**
- * 回放时间轴：把录制的关键点重新喂给判定器，预先算出每一帧对应的计数/计时与提示，
+ * 回放时间轴：把录制或视频重识别后的关键点喂给判定器，预先算出每一帧对应的计数/计时与提示，
  * 回放拖动进度条时可以直接取值，无需重新计算。
  *
  * <p>与实时训练共用同一套判定器，算法升级后旧记录的回放成绩可能不同。</p>
@@ -48,6 +48,16 @@ public class ReplayTimeline {
     public static ReplayTimeline build(List<PoseFrame> frames, Session session) {
         return build(frames, session.getExerciseType(), session.getVariant(),
                 session.getInitialCalibration(), session.getCalibrationChanges());
+    }
+
+    /**
+     * 从视频重新抽样时只使用训练开始时的个人目标。
+     * 录制中的校准事件以旧骨架帧下标保存，且旧骨架和录像的起点并未同步记录；
+     * 不能把这些下标直接用于新的采样，也不能假装其时间精确对应视频。
+     */
+    public static ReplayTimeline buildForVideo(List<PoseFrame> frames, Session session) {
+        return build(frames, session.getExerciseType(), session.getVariant(),
+                session.getInitialCalibration(), Collections.emptyList());
     }
 
     private static ReplayTimeline build(List<PoseFrame> frames, ExerciseType type, String variant,

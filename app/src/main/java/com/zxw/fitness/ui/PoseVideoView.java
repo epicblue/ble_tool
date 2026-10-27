@@ -126,7 +126,11 @@ public class PoseVideoView extends FrameLayout {
     public void seekTo(int positionMs) {
         if (mediaPlayer != null && prepared) {
             try {
-                mediaPlayer.seekTo(positionMs);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    mediaPlayer.seekTo((long) positionMs, MediaPlayer.SEEK_CLOSEST);
+                } else {
+                    mediaPlayer.seekTo(positionMs);
+                }
                 return;
             } catch (IllegalStateException ignored) {
                 // 回退到待处理
@@ -181,6 +185,7 @@ public class PoseVideoView extends FrameLayout {
     public void stopPlayback() {
         autoPlay = false;
         pendingSeekMs = -1;
+        pendingPath = null;
         releasePlayer();
     }
 
@@ -208,7 +213,12 @@ public class PoseVideoView extends FrameLayout {
         mediaPlayer = player;
         prepared = false;
         try {
-            player.setSurface(new Surface(surfaceTexture));
+            Surface surface = new Surface(surfaceTexture);
+            try {
+                player.setSurface(surface);
+            } finally {
+                surface.release();
+            }
             player.setDataSource(pendingPath);
             player.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
                 @Override
@@ -220,14 +230,15 @@ public class PoseVideoView extends FrameLayout {
                     videoWidth = mp.getVideoWidth();
                     videoHeight = mp.getVideoHeight();
                     requestLayout();
-                    applySpeed();
                     if (pendingSeekMs >= 0) {
-                        mp.seekTo(pendingSeekMs);
+                        int position = pendingSeekMs;
                         pendingSeekMs = -1;
+                        seekTo(position);
                     }
                     if (autoPlay) {
                         try {
                             mp.start();
+                            applySpeed();
                         } catch (IllegalStateException ignored) {
                             // ignore
                         }
@@ -240,6 +251,7 @@ public class PoseVideoView extends FrameLayout {
             player.setOnErrorListener(new MediaPlayer.OnErrorListener() {
                 @Override
                 public boolean onError(MediaPlayer mp, int what, int extra) {
+                    if (mediaPlayer != mp) return true;
                     prepared = false;
                     final MediaPlayer failed = mp;
                     // 不在回调里直接 release，避免状态混乱
@@ -271,8 +283,9 @@ public class PoseVideoView extends FrameLayout {
             return;
         }
         try {
+            // setPlaybackParams 可能自动开始播放；暂停时只记住倍速，等 start() 后应用。
+            if (!mediaPlayer.isPlaying() && !autoPlay) return;
             PlaybackParams params = new PlaybackParams();
-            // setSpeed 会同时影响音视频；个别设备不支持变速时抛异常，忽略即可
             params.setSpeed(speed);
             mediaPlayer.setPlaybackParams(params);
         } catch (RuntimeException ignored) {

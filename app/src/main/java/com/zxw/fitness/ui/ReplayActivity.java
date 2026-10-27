@@ -21,7 +21,9 @@ import androidx.core.content.ContextCompat;
 import com.zxw.R;
 import com.zxw.fitness.analysis.HoldScore;
 import com.zxw.fitness.analysis.ReplayTimeline;
+import com.zxw.fitness.analysis.VideoPoseReanalysis;
 import com.zxw.fitness.camera.SkeletonOverlay;
+import com.zxw.fitness.camera.VideoPoseReanalyzer;
 import com.zxw.fitness.data.PoseLog;
 import com.zxw.fitness.data.SessionStore;
 import com.zxw.fitness.data.VideoExporter;
@@ -40,8 +42,8 @@ import java.util.Locale;
 /**
  * 回放页：同时支持"视频回放（叠加骨架）"和"纯骨架动画回放"。
  *
- * <p>骨架数据与视频的播放进度同步；拖动进度条、倍速播放都会重新计算当时的计数/计时，
- * 按当前版本判定；算法升级后旧记录的结果可能不同。</p>
+ * <p>有视频时默认重新抽帧识别；无视频时回放录制骨架。两者都按当前判定器计算，
+ * 重识别结果仅驻留内存，与录像和保存的历史成绩分开。</p>
  */
 public class ReplayActivity extends Activity implements VideoExporter.Listener {
 
@@ -55,6 +57,9 @@ public class ReplayActivity extends Activity implements VideoExporter.Listener {
     private static final String STATE_EXPORT_FILE = "export_video_file";
     private static final float[] SPEEDS = {1f, 0.5f, 1.5f, 2f};
     private static final long TICK_MS = 50;
+    private static final int MODE_RECORDED = 0;
+    private static final int MODE_NEW_RAW = 1;
+    private static final int MODE_NEW_FILTERED = 2;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final List<Session> playlist = new ArrayList<>();
@@ -74,6 +79,8 @@ public class ReplayActivity extends Activity implements VideoExporter.Listener {
     private TextView btnNext;
     private TextView tvNoVideo;
     private TextView btnMarkerDetails;
+    private TextView btnPoseMode;
+    private TextView tvReplayInfo;
     private TextView btnExportVideo;
     private TextView tvSceneDiagnosis;
     private TextView tvRecordedSummary;
@@ -81,6 +88,14 @@ public class ReplayActivity extends Activity implements VideoExporter.Listener {
     private Session session;
     private PoseLog poseLog;
     private ReplayTimeline timeline;
+    private ReplayTimeline recordedTimeline;
+    private VideoPoseReanalyzer videoReanalyzer;
+    private VideoPoseReanalysis videoAnalysis;
+    private File currentVideo;
+    private int poseMode = MODE_RECORDED;
+    private boolean analyzingVideo;
+    private boolean lifecyclePaused;
+    private String fallbackReason = "";
     private int playlistIndex;
 
     private boolean hasVideo;
@@ -104,6 +119,7 @@ public class ReplayActivity extends Activity implements VideoExporter.Listener {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_replay);
         bindViews();
+        videoReanalyzer = new VideoPoseReanalyzer();
 
         long sessionId = getIntent().getLongExtra(EXTRA_SESSION_ID, -1);
         if (savedInstanceState != null) {
@@ -161,11 +177,16 @@ public class ReplayActivity extends Activity implements VideoExporter.Listener {
         btnNext = findViewById(R.id.btnNext);
         tvNoVideo = findViewById(R.id.tvNoVideo);
         btnMarkerDetails = findViewById(R.id.btnMarkerDetails);
+        btnPoseMode = findViewById(R.id.btnPoseMode);
+        tvReplayInfo = findViewById(R.id.tvReplayInfo);
         btnExportVideo = findViewById(R.id.btnExportVideo);
         tvSceneDiagnosis = findViewById(R.id.tvSceneDiagnosis);
         tvRecordedSummary = findViewById(R.id.tvRecordedSummary);
         btnExportVideo.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { confirmExportVideo(); }
+        });
+        btnPoseMode.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { onPoseModeClicked(); }
         });
         btnMarkerDetails.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
@@ -240,29 +261,36 @@ public class ReplayActivity extends Activity implements VideoExporter.Listener {
 
     private void loadSession() {
         handler.removeCallbacksAndMessages(null);
+        videoReanalyzer.cancel();
         session = playlist.get(playlistIndex);
         ExerciseType type = session.getExerciseType();
 
         videoView.stopPlayback();
         videoReady = false;
         hasVideo = false;
+        analyzingVideo = false;
+        videoAnalysis = null;
+        fallbackReason = "";
+        poseMode = MODE_RECORDED;
         playing = true;
+        userSeeking = false;
         clockMs = 0;
         lastTickMs = 0;
         lastSceneIndex = -1;
+        overlay.setMirrored(false);
         overlay.setPendingJumps(null);
         overlay.setFrame(null);
         tvSceneDiagnosis.setText("没有可用的骨架记录");
 
         poseLog = PoseLog.load(SessionStore.resolveMedia(this, session.getUserId(),
                 session.getPoseFile()));
+        recordedTimeline = poseLog != null && !poseLog.isEmpty()
+                ? ReplayTimeline.build(poseLog.getFrames(), session) : null;
+        timeline = recordedTimeline;
         overlay.setPixelCoordinates(poseLog != null && poseLog.isLegacyPixelCoordinates());
-        timeline = poseLog != null && !poseLog.isEmpty()
-                ? ReplayTimeline.build(poseLog.getFrames(), session)
-                : null;
 
-        File video = SessionStore.resolveMedia(this, session.getUserId(), session.getVideoFile());
-        hasVideo = video != null && video.exists() && video.length() > 0;
+        currentVideo = SessionStore.resolveMedia(this, session.getUserId(), session.getVideoFile());
+        hasVideo = currentVideo != null && currentVideo.isFile() && currentVideo.length() > 0;
         durationMs = Math.max(session.getDurationMs(),
                 poseLog != null ? poseLog.getDurationMs() : 0);
 
@@ -275,33 +303,29 @@ public class ReplayActivity extends Activity implements VideoExporter.Listener {
         tvSubtitle.setText(TimeUtils.formatFriendly(session.getStartedAt())
                 + scoreLabel + session.getResultText() + stability
                 + (session.hasPersonalCalibration() ? " · 个人目标" : ""));
-        if (type == ExerciseType.WALL_SIT) {
-            boolean canShowTotal = timeline != null || session.hasTotalHoldMs();
-            tvUnit.setText(canShowTotal ? HoldScore.unitLabel(type) : "秒（最长）");
-            tvRecordedSummary.setVisibility(View.VISIBLE);
-            tvRecordedSummary.setText("保存：" + session.getResultSummary()
-                    + (timeline != null ? " · 回放按当前算法重算" : ""));
-        } else {
-            tvUnit.setText(type.getUnitLabel());
-            tvRecordedSummary.setVisibility(View.GONE);
-        }
+        updateSummaryLabels();
         updateExportButton();
 
         btnPrev.setVisibility(playlistIndex > 0 ? View.VISIBLE : View.GONE);
         btnNext.setVisibility(playlistIndex < playlist.size() - 1 ? View.VISIBLE : View.GONE);
+        seekBar.setMax(1000);
+        seekBar.setProgress(0);
+        setPlaybackControlsEnabled(true);
 
         if (hasVideo) {
             videoView.setVisibility(View.VISIBLE);
             tvNoVideo.setVisibility(View.GONE);
             videoView.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
-                @Override
-                public void onPrepared(MediaPlayer mp) {
+                @Override public void onPrepared(MediaPlayer mp) {
                     videoReady = true;
-                    durationMs = Math.max(durationMs, mp.getDuration());
+                    // 叠加索引以视频本身的时间为准，不能以更长的训练计时作为视频时长。
+                    if (mp.getDuration() > 0) durationMs = mp.getDuration();
                     int vw = mp.getVideoWidth();
                     int vh = mp.getVideoHeight();
-                    // 竖屏拍摄的 mp4 由播放器按旋转信息渲染，使用骨架记录的画面比例更可靠
-                    if (poseLog != null) {
+                    if (videoAnalysis != null) {
+                        vw = videoAnalysis.getSourceWidth();
+                        vh = videoAnalysis.getSourceHeight();
+                    } else if (poseLog != null) {
                         vw = poseLog.getViewWidth();
                         vh = poseLog.getViewHeight();
                     } else if (vw > vh) {
@@ -310,32 +334,42 @@ public class ReplayActivity extends Activity implements VideoExporter.Listener {
                         vh = temp;
                     }
                     videoView.setVideoAspect(vw, vh);
-                    overlay.setSourceSize(vw, vh);
+                    if (poseMode != MODE_RECORDED || poseLog == null) overlay.setSourceSize(vw, vh);
+                    else overlay.setSourceSize(poseLog.getViewWidth(), poseLog.getViewHeight());
                     applyVideoSpeed();
-                    videoView.seekTo(1);
+                    videoView.seekTo((int) Math.min(Integer.MAX_VALUE, clockMs));
                     updatePlayButton();
-                    if (playing) {
-                        videoView.start();
-                    }
-                    render(0);
+                    if (playing && !analyzingVideo) videoView.start();
+                    render(clockMs);
                 }
             });
             videoView.setOnErrorListener(new MediaPlayer.OnErrorListener() {
-                @Override
-                public boolean onError(MediaPlayer mp, int what, int extra) {
+                @Override public boolean onError(MediaPlayer mp, int what, int extra) {
                     Toast.makeText(ReplayActivity.this, "视频无法播放，改为骨架回放",
                             Toast.LENGTH_SHORT).show();
-                    videoView.setVisibility(View.GONE);
-                    tvNoVideo.setVisibility(View.VISIBLE);
+                    if (analyzingVideo) videoReanalyzer.cancel();
+                    analyzingVideo = false;
+                    videoAnalysis = null;
                     hasVideo = false;
                     videoReady = false;
-                    if (poseLog != null) {
-                        overlay.setSourceSize(poseLog.getViewWidth(), poseLog.getViewHeight());
-                    }
+                    durationMs = Math.max(session.getDurationMs(),
+                            poseLog != null ? poseLog.getDurationMs() : 0);
+                    videoView.setVisibility(View.GONE);
+                    tvNoVideo.setVisibility(View.VISIBLE);
+                    tvNoVideo.setText(poseLog != null ? "视频无法播放，正在回放录制骨架"
+                            : "视频无法播放，且没有录制骨架");
+                    fallbackReason = "视频无法播放";
+                    playing = !lifecyclePaused;
+                    lastTickMs = SystemClock.elapsedRealtime();
+                    setPlaybackControlsEnabled(true);
+                    selectPoseMode(MODE_RECORDED);
+                    updatePlayButton();
+                    render(clockMs);
                     return true;
                 }
             });
-            videoView.setVideoPath(video.getAbsolutePath());
+            beginVideoReanalysis();
+            videoView.setVideoPath(currentVideo.getAbsolutePath());
             videoView.requestFocus();
         } else {
             videoView.setVisibility(View.GONE);
@@ -343,39 +377,199 @@ public class ReplayActivity extends Activity implements VideoExporter.Listener {
             tvNoVideo.setText(poseLog != null
                     ? "本记录没有视频，正在回放骨架动作"
                     : "本记录没有可回放的画面");
-            if (poseLog != null) {
-                overlay.setSourceSize(poseLog.getViewWidth(), poseLog.getViewHeight());
-            }
+            if (poseLog != null) overlay.setSourceSize(poseLog.getViewWidth(), poseLog.getViewHeight());
+            updatePoseControls();
         }
 
-        seekBar.setMax(1000);
-        seekBar.setProgress(0);
         updatePlayButton();
         render(0);
         handler.post(tick);
     }
 
+    /** 每次进入有视频的记录，默认从原 MP4 重新识别；不修改任何存档。 */
+    private void beginVideoReanalysis() {
+        if (!hasVideo || currentVideo == null || analyzingVideo) return;
+        if (videoReady) {
+            clockMs = videoView.getCurrentPosition();
+            videoView.pause();
+        }
+        playing = false;
+        analyzingVideo = true;
+        fallbackReason = "";
+        videoAnalysis = null;
+        selectPoseMode(MODE_RECORDED);
+        setPlaybackControlsEnabled(false);
+        updatePlayButton();
+        tvReplayInfo.setText("正在从原视频重新识别 0% · 耗时取决于设备；可点“取消识别”返回普通回放");
+        videoReanalyzer.start(currentVideo, session, new VideoPoseReanalyzer.Listener() {
+            @Override public void onProgress(int complete, int total) {
+                int percent = total > 0 ? complete * 100 / total : 0;
+                tvReplayInfo.setText("正在从原视频重新识别 " + percent + "%（" + complete + "/" + total
+                        + "）· 可点“取消识别”返回普通回放");
+            }
+
+            @Override public void onCompleted(VideoPoseReanalysis result) {
+                analyzingVideo = false;
+                videoAnalysis = result;
+                if (!videoReady) durationMs = result.getDurationMs();
+                clockMs = 0;
+                // 默认展示经过当前 PoseSmoother 的结果，便于直接检验新滤波/重捕获算法。
+                selectPoseMode(MODE_NEW_FILTERED);
+                setPlaybackControlsEnabled(true);
+                if (videoReady) videoView.seekTo(0);
+                playing = !lifecyclePaused;
+                if (playing && videoReady) {
+                    videoView.start();
+                    applyVideoSpeed();
+                }
+                lastTickMs = SystemClock.elapsedRealtime();
+                updatePlayButton();
+                render(0);
+            }
+
+            @Override public void onError(String message) {
+                stopVideoReanalysis("重识别失败：" + message, true);
+                Toast.makeText(ReplayActivity.this, "重识别失败：" + message,
+                        Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
+    private void stopVideoReanalysis(String reason, boolean resumePlayback) {
+        videoReanalyzer.cancel();
+        analyzingVideo = false;
+        videoAnalysis = null;
+        fallbackReason = reason;
+        setPlaybackControlsEnabled(true);
+        selectPoseMode(MODE_RECORDED);
+        playing = resumePlayback && !lifecyclePaused;
+        if (playing && hasVideo && videoReady) {
+            videoView.start();
+            applyVideoSpeed();
+        }
+        lastTickMs = SystemClock.elapsedRealtime();
+        updatePlayButton();
+        render(clockMs);
+    }
+
+    private void onPoseModeClicked() {
+        if (analyzingVideo) {
+            stopVideoReanalysis("已取消重识别", true);
+        } else if (videoAnalysis == null) {
+            beginVideoReanalysis();
+        } else if (poseMode == MODE_NEW_RAW) {
+            selectPoseMode(MODE_NEW_FILTERED);
+        } else if (poseMode == MODE_NEW_FILTERED && recordedTimeline != null) {
+            selectPoseMode(MODE_RECORDED);
+        } else {
+            selectPoseMode(MODE_NEW_RAW);
+        }
+        if (!analyzingVideo) render(hasVideo && videoReady ? videoView.getCurrentPosition() : clockMs);
+    }
+
+    private void selectPoseMode(int mode) {
+        poseMode = mode;
+        lastSceneIndex = -1;
+        overlay.setPendingJumps(null);
+        if (mode == MODE_RECORDED || videoAnalysis == null) {
+            timeline = recordedTimeline;
+            overlay.setPixelCoordinates(poseLog != null && poseLog.isLegacyPixelCoordinates());
+            if (poseLog != null) overlay.setSourceSize(poseLog.getViewWidth(), poseLog.getViewHeight());
+            else overlay.setFrame(null);
+        } else {
+            timeline = videoAnalysis.getTimeline();
+            overlay.setPixelCoordinates(false);
+            overlay.setSourceSize(videoAnalysis.getSourceWidth(), videoAnalysis.getSourceHeight());
+        }
+        // 视频本身的比例始终以解码画面为准，切回旧骨架时不要拉伸视频。
+        if (hasVideo && videoAnalysis != null) {
+            videoView.setVideoAspect(videoAnalysis.getSourceWidth(), videoAnalysis.getSourceHeight());
+        }
+        updateSummaryLabels();
+        updatePoseControls();
+    }
+
+    private void setPlaybackControlsEnabled(boolean enabled) {
+        btnPlay.setEnabled(enabled);
+        btnSpeed.setEnabled(enabled);
+        seekBar.setEnabled(enabled);
+        btnPlay.setAlpha(enabled ? 1f : 0.55f);
+        btnSpeed.setAlpha(enabled ? 1f : 0.55f);
+    }
+
+    private void updateSummaryLabels() {
+        if (session == null) return;
+        ExerciseType type = session.getExerciseType();
+        if (type == ExerciseType.WALL_SIT) {
+            boolean canShowTotal = timeline != null || session.hasTotalHoldMs();
+            tvUnit.setText(canShowTotal ? HoldScore.unitLabel(type) : "秒（最长）");
+        } else {
+            tvUnit.setText(type.getUnitLabel());
+        }
+        tvRecordedSummary.setVisibility(View.VISIBLE);
+        tvRecordedSummary.setText("历史保存：" + session.getResultSummary()
+                + (timeline != null ? " · 大字为回放重算" : ""));
+    }
+
+    private void updatePoseControls() {
+        if (analyzingVideo) {
+            btnPoseMode.setText("取消识别");
+            btnPoseMode.setEnabled(true);
+            btnPoseMode.setAlpha(1f);
+            return;
+        }
+        if (!hasVideo) {
+            btnPoseMode.setText("仅录制骨架");
+            btnPoseMode.setEnabled(false);
+            btnPoseMode.setAlpha(0.55f);
+            String detail = recordedTimeline != null ? "显示录制骨架，按当前判定器重算"
+                    : "没有录制骨架，仅显示保存的成绩";
+            tvReplayInfo.setText((fallbackReason.isEmpty() ? "纯骨架回放" : fallbackReason)
+                    + " · " + detail);
+            return;
+        }
+        btnPoseMode.setEnabled(true);
+        btnPoseMode.setAlpha(1f);
+        if (videoAnalysis == null) {
+            btnPoseMode.setText("重新识别");
+            String detail = recordedTimeline != null ? "录制骨架" : "没有录制骨架";
+            tvReplayInfo.setText((fallbackReason.isEmpty() ? detail : fallbackReason + " · " + detail)
+                    + " · 当前不是视频重识别结果，点击“重新识别”可重试");
+        } else if (poseMode == MODE_RECORDED) {
+            btnPoseMode.setText("骨架：录制");
+            tvReplayInfo.setText("录制时的滤波骨架 · 按当前判定器重算；点击切换新识别");
+        } else {
+            btnPoseMode.setText(poseMode == MODE_NEW_RAW ? "骨架：新原始" : "骨架：新滤波");
+            String mode = session.getExerciseType() == ExerciseType.SQUAT ? "逐帧找人" : "连续跟踪";
+            String sparse = videoAnalysis.getIntervalMs() > 100 ? " · 较稀采样可能漏动作" : "";
+            String missing = videoAnalysis.getMissingFrames() > 0
+                    ? " · " + videoAnalysis.getMissingFrames() + " 帧未解码" : "";
+            tvReplayInfo.setText("视频新识别（" + mode + "，每 " + videoAnalysis.getIntervalMs()
+                    + "ms）" + sparse + missing
+                    + " · 仅临时回放；无重力补偿/组中校准，计数供参考");
+        }
+        btnPoseMode.setContentDescription(btnPoseMode.getText() + "，点击切换或重新识别");
+    }
+
     private final Runnable tick = new Runnable() {
-        @Override
-        public void run() {
+        @Override public void run() {
+            boolean wasPlaying = playing;
             long time;
-            if (hasVideo && videoReady) {
-                if (playing) {
-                    time = videoView.getCurrentPosition();
+            if (hasVideo) {
+                // 尚未准备好播放器时不要用系统时钟假装视频已经播放。
+                time = videoReady && playing ? videoView.getCurrentPosition() : clockMs;
+                if (videoReady && playing) {
+                    clockMs = time;
                     if (durationMs > 0 && time >= durationMs - 30) {
                         playing = false;
                         videoView.pause();
                         updatePlayButton();
                     }
-                } else {
-                    time = clockMs;
                 }
             } else {
                 long now = SystemClock.elapsedRealtime();
                 if (playing) {
-                    if (lastTickMs > 0) {
-                        clockMs += (long) ((now - lastTickMs) * speed);
-                    }
+                    if (lastTickMs > 0) clockMs += (long) ((now - lastTickMs) * speed);
                     if (durationMs > 0 && clockMs >= durationMs) {
                         clockMs = durationMs;
                         playing = false;
@@ -385,9 +579,7 @@ public class ReplayActivity extends Activity implements VideoExporter.Listener {
                 lastTickMs = now;
                 time = clockMs;
             }
-            if (playing || !hasVideo) {
-                render(time);
-            }
+            if (wasPlaying || !hasVideo) render(time);
             handler.postDelayed(this, TICK_MS);
         }
     };
@@ -402,21 +594,40 @@ public class ReplayActivity extends Activity implements VideoExporter.Listener {
         ExerciseType type = session == null ? ExerciseType.PUSHUP : session.getExerciseType();
         if (timeline != null && timeline.size() > 0) {
             int index = timeline.indexAt(timeMs);
-            if (index >= 0 && poseLog != null && index < poseLog.getFrames().size()) {
-                PoseFrame frame = poseLog.getDisplayFrames().get(index);
-                overlay.setFrame(frame);
-                if (index != lastSceneIndex) {
-                    PoseSceneResult result = PoseSceneDiagnostics.inspect(frame, type,
-                            poseLog.getViewWidth(), poseLog.getViewHeight(), poseLog.isLegacyPixelCoordinates());
-                    String legend = showMarkerDetails ? "绿≥50% 黄30–49%；无点=缺失/出画"
-                            : "详细标记已关闭；基本骨架仍显示";
-                    tvSceneDiagnosis.setText("回放滤波 " + result.reliablePoints + "/" + result.totalPoints
-                            + " · " + result.message + "\n" + legend);
-                    int color = result.quality == PoseSceneResult.Quality.USABLE
-                            ? R.color.fit_text : R.color.fit_warn;
-                    tvSceneDiagnosis.setTextColor(ContextCompat.getColor(this, color));
-                    lastSceneIndex = index;
-                }
+            PoseFrame frame = null;
+            int sourceWidth = 0;
+            int sourceHeight = 0;
+            boolean pixels = false;
+            String frameLabel = "录制滤波";
+            if (index >= 0 && poseMode == MODE_RECORDED && poseLog != null
+                    && index < poseLog.getDisplayFrames().size()) {
+                frame = poseLog.getDisplayFrames().get(index);
+                sourceWidth = poseLog.getViewWidth();
+                sourceHeight = poseLog.getViewHeight();
+                pixels = poseLog.isLegacyPixelCoordinates();
+                overlay.setPendingJumps(null);
+            } else if (index >= 0 && videoAnalysis != null && index < videoAnalysis.size()
+                    && poseMode != MODE_RECORDED) {
+                boolean raw = poseMode == MODE_NEW_RAW;
+                frame = raw ? videoAnalysis.getRawFrame(index) : videoAnalysis.getFilteredFrame(index);
+                sourceWidth = videoAnalysis.getSourceWidth();
+                sourceHeight = videoAnalysis.getSourceHeight();
+                frameLabel = raw ? "新识别原始" : "新识别滤波";
+                overlay.setPendingJumps(raw ? videoAnalysis.getPendingJumps(index) : null);
+            }
+            overlay.setFrame(frame);
+            if (frame != null && index != lastSceneIndex) {
+                PoseSceneResult result = PoseSceneDiagnostics.inspect(frame, type,
+                        sourceWidth, sourceHeight, pixels);
+                String legend = showMarkerDetails ? "绿≥50% 黄30–49%；无点=缺失/出画"
+                        + (poseMode == MODE_NEW_RAW ? "；紫圈=滤波待定" : "")
+                        : "详细标记已关闭；基本骨架仍显示";
+                tvSceneDiagnosis.setText(frameLabel + " " + result.reliablePoints + "/" + result.totalPoints
+                        + " · " + result.message + "\n" + legend);
+                int color = result.quality == PoseSceneResult.Quality.USABLE
+                        ? R.color.fit_text : R.color.fit_warn;
+                tvSceneDiagnosis.setTextColor(ContextCompat.getColor(this, color));
+                lastSceneIndex = index;
             }
             int good = timeline.getGoodRepsAt(index);
             int bad = timeline.getBadRepsAt(index);
@@ -436,6 +647,9 @@ public class ReplayActivity extends Activity implements VideoExporter.Listener {
             }
             tvStatus.setText(timeline.getStatusAt(index) + counts);
         } else {
+            overlay.setPendingJumps(null);
+            overlay.setFrame(null);
+            tvSceneDiagnosis.setText("没有可用的录制骨架");
             // 旧记录没有累计字段；无骨架时只能显示已保存的最长单组。
             long savedHold = type == ExerciseType.WALL_SIT && session.hasTotalHoldMs()
                     ? session.getTotalHoldMs() : session.getHoldMs();
@@ -623,16 +837,31 @@ public class ReplayActivity extends Activity implements VideoExporter.Listener {
         super.onStart();
         VideoExporter.attach(this);
         updateExportButton();
+        if (session != null) {
+            handler.removeCallbacks(tick);
+            handler.post(tick);
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        lifecyclePaused = false;
     }
 
     @Override
     protected void onStop() {
+        handler.removeCallbacks(tick);
+        if (analyzingVideo && session != null) {
+            stopVideoReanalysis("离开页面已停止重识别", false);
+        }
         VideoExporter.detach(this);
         super.onStop();
     }
 
     @Override
     protected void onPause() {
+        lifecyclePaused = true;
         super.onPause();
         if (playing) {
             playing = false;
@@ -647,6 +876,7 @@ public class ReplayActivity extends Activity implements VideoExporter.Listener {
     @Override
     protected void onDestroy() {
         handler.removeCallbacksAndMessages(null);
+        if (videoReanalyzer != null) videoReanalyzer.shutdown();
         if (videoView != null) {
             videoView.stopPlayback();
         }

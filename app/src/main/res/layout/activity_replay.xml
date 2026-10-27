@@ -124,7 +124,7 @@
             android:textSize="14sp" />
     </LinearLayout>
 
-    <!-- 历史回放展示录制的滤波后关键点；开关仅控制详细标记。 -->
+    <!-- 有视频时可切换新识别原始/滤波骨架与录制骨架。 -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -155,6 +155,24 @@
                 android:paddingBottom="8dp"
                 android:text="标记：开"
                 android:textColor="@color/fit_text"
+                android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/btnPoseMode"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:minHeight="40dp"
+                android:background="@drawable/fit_bg_pill"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center"
+                android:paddingLeft="10dp"
+                android:paddingTop="8dp"
+                android:paddingRight="10dp"
+                android:paddingBottom="8dp"
+                android:text="重新识别"
+                android:textColor="@color/fit_accent"
                 android:textSize="12sp" />
 
             <TextView
@@ -251,6 +269,15 @@
             android:textColor="@color/fit_text_dim"
             android:textSize="11sp"
             android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/tvReplayInfo"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="3dp"
+            android:maxLines="3"
+            android:textColor="@color/fit_text_dim"
+            android:textSize="11sp" />
 
         <SeekBar
             android:id="@+id/seekBar"

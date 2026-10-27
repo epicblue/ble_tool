@@ -128,7 +128,7 @@ public class SkeletonOverlay extends View {
         }
     }
 
-    /** 原始点暂被滤波器拒绝时用紫圈提示；回放没有原始帧，不显示紫圈。 */
+    /** 原始点暂被滤波器拒绝时用紫圈提示；录制骨架没有待定信息，视频重识别可显示。 */
     public void setPendingJumps(@Nullable boolean[] pending) { pendingJumps = pending; }
 
     public void setFrame(@Nullable PoseFrame frame) {

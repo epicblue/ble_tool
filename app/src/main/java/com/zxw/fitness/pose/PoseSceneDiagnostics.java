@@ -5,7 +5,7 @@ import com.zxw.fitness.model.PoseFrame;
 
 /**
  * 基于当前关键点的场景提示：只解释遮挡、出画和尺度，不改变运动成绩，也不推断动作是否安全。
- * 实时输入是 ML Kit 原始帧；历史回放输入是录制时的滤波帧。
+ * 实时输入是 ML Kit 原始帧；回放可输入新识别原始帧、新滤波帧或录制滤波帧。
  */
 public final class PoseSceneDiagnostics {
     private static final int SHOULDER = 0, ELBOW = 1, WRIST = 2, HIP = 3, KNEE = 4, ANKLE = 5;
