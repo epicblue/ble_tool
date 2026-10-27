@@ -795,6 +795,102 @@ for _ in range(3):
         counter.process(smoother.smooth(pushup(t, a))); t += STEP
 check('normal reps survive smoother changes', counter.good == 3 and counter.bad == 0)
 
+# 深蹲中镜头持续横移、人体站起：原逐点候选会一直因位置移动而无法满足静止窗口。
+sm = PoseSmoother(True); live = Squat(); guard = FrameGapGuard(); logged = []; expected = []; t = 0
+def feed_squat_pan(angle, drop, dx):
+    global t
+    raw = _shift_visible(squat(t, angle, drop), dx)
+    filtered = sm.smooth(raw); guard.process(live, filtered)
+    logged.append(filtered); expected.append((live.good, live.bad)); t += STEP
+    return raw, filtered
+for _ in range(8): feed_squat_pan(168, 0, -.12)
+for i in range(9): feed_squat_pan(168 - (i + 1) * 8, (i + 1) * .06, -.12)
+for i in range(32):
+    raw, filtered = feed_squat_pan(96 + i * 9 if i < 8 else 168,
+                                   .54 * (1 - (i + 1) / 8) if i < 8 else 0,
+                                   .04 + i * .008)
+check('squat moving-pan track recovers', all(filtered.rel(j) for j in (LS, LH, LK, LA))
+      and avg_angle(filtered, LH, LK, LA, RH, RK, RA) > 155
+      and abs(filtered.x(LS) - raw.x(LS)) < .04 and live.good == live.bad == 0)
+for angle in (175, 160, 140, 120, 95, 95, 120, 140, 160, 175):
+    drop = (150 - angle) / 150 if angle < 150 else 0
+    for _ in range(3): feed_squat_pan(angle, drop, .04 + 31 * .008)
+check('squat counts next full rep after pan', live.good == 1 and live.bad == 0)
+replay = Squat(); replay_guard = FrameGapGuard(); actual = []
+for f in logged:
+    replay_guard.process(replay, f); actual.append((replay.good, replay.bad))
+check('squat pan filtered replay matches live', actual == expected)
+sm = PoseSmoother(True); sm.smooth(squat(0, 168, 0))
+for n in range(1, 33):
+    moved = sm.smooth(_shift_visible(squat(n * STEP, 168, 0), .18 if n % 2 else -.18))
+check('squat alternating pan candidates rejected', sm.reacquired == 0 and not moved.rel(LS))
+sm = PoseSmoother(True); sm.smooth(squat(0, 168, 0))
+for n in range(1, 6): sm.smooth(_shift_visible(squat(n * STEP, 168, 0), .18))
+sm.smooth(_modified(_shift_visible(squat(6 * STEP, 168, 0), .18), {LS: {3: .05}}))
+for n in range(7, 16): moved = sm.smooth(_shift_visible(squat(n * STEP, 168, 0), .18))
+check('squat pan missing anchor resets evidence', not moved.rel(LS))
+for n in range(16, 21): moved = sm.smooth(_shift_visible(squat(n * STEP, 168, 0), .18))
+check('squat pan recovers after fresh evidence', moved.rel(LS))
+for label, spike_x, spike_y in (('horizontal', -.25, 0.), ('vertical', 0., .35)):
+    sm = PoseSmoother(True); sm.smooth(squat(0, 168, 0))
+    for n in range(1, 12): sm.smooth(_shift_visible(squat(n * STEP, 168, 0), .16 + n * .008))
+    raw = _shift_visible(squat(12 * STEP, 168, 0), .16 + 12 * .008)
+    raw = _modified(raw, {LK: {0: raw.x(LK) + spike_x, 1: raw.y(LK) + spike_y},
+                          RK: {0: raw.x(RK) + spike_x, 1: raw.y(RK) + spike_y}})
+    moved = sm.smooth(raw)
+    check('squat pan rejects ' + label + ' knee spike', moved.rel(LS) and not moved.rel(LK) and sm.pending()[LK])
+sm = PoseSmoother(True); sm.smooth(squat(0, 168, 0))
+for n in range(1, 23):
+    raw = _shift_visible(squat(n * STEP, 168, 0), .16 + n * .008)
+    raw = _modified(raw, {i: {3: .55} for i in (LS, LH, LA, RS, RH, RA)})
+    moved = sm.smooth(raw)
+check('squat pan requires confident anchors', not moved.rel(LS) and sm.reacquired == 0)
+regular = PoseSmoother(); squat_sm = PoseSmoother(True)
+regular.smooth(squat(0, 168, 0)); squat_sm.smooth(squat(0, 168, 0))
+for n in range(1, 23):
+    raw = _shift_visible(squat(n * STEP, 168, 0), .16 + n * .008)
+    regular_out, squat_out = regular.smooth(raw), squat_sm.smooth(raw)
+check('coherent pan opt-in is squat-only', not regular_out.rel(LS) and squat_out.rel(LS))
+sm = PoseSmoother(True); sm.smooth(squat(0, 168, 0)); t = 0
+for n in range(1, 13):
+    t += 400; moved = sm.smooth(_shift_visible(squat(t, 168, 0), .16 + n * .008))
+slow_still_pending = not moved.rel(LS)
+for n in range(20):
+    t += STEP; moved = sm.smooth(_shift_visible(squat(t, 168, 0), .26 + n * .008))
+check('slow pan waits for consecutive evidence', slow_still_pending and moved.rel(LS))
+# 边界负对照：极高帧率下逐点或整体候选不能比深蹲丢失门槛更早恢复并拼接半次动作。
+sm = PoseSmoother(True); live = Squat(); guard = FrameGapGuard(); t = 0
+def feed_fast_squat(angle, drop, dx, missing=False):
+    global t
+    raw = _shift_visible(squat(t, angle, drop), dx)
+    raw = F({i: (x, y, z, 1. if c >= .3 else c) for i, (x, y, z, c) in raw.p.items()}, t)
+    if missing: raw = _modified(raw, {LS: {3: .05}, RA: {3: .05}})
+    guard.process(live, sm.smooth(raw)); t += 5
+for _ in range(80): feed_fast_squat(175, 0, 0)
+for angle in (160, 145, 130, 115, 90):
+    for _ in range(20): feed_fast_squat(angle, .6 * (175 - angle) / 85, 0)
+for i in range(180): feed_fast_squat(175, 0, .14 + i * .0003)
+check('fast pan cannot stitch unseen squat', sm.reacquired > 0 and live.good == live.bad == 0)
+sm = PoseSmoother(True); live = Squat(); guard = FrameGapGuard(); t = 0
+for _ in range(80): feed_fast_squat(175, 0, 0)
+for angle in (160, 145, 130, 115, 90):
+    for _ in range(20): feed_fast_squat(angle, .6 * (175 - angle) / 85, 0)
+for i in range(180): feed_fast_squat(175, 0, .14 + i * .0003, i == 140)
+check('interrupted pan cannot bypass safety', sm.reacquired > 0 and live.good == live.bad == 0)
+sm = PoseSmoother(True); sm.smooth(squat(0, 168, 0))
+for n in range(1, 5): sm.smooth(_shift_visible(squat(n * STEP, 168, 0), .18))
+for n in range(5, 19): sm.smooth(squat(n * STEP, 168, 0))
+for n in range(19, 34):
+    raw = squat(n * STEP, 168, 0)
+    moved = sm.smooth(_modified(raw, {LW: {0: raw.x(LW) + .18}}))
+check('aborted pan releases isolated joints', moved.rel(LW) and not sm.pending()[LW])
+sm = PoseSmoother(True); sm.smooth(squat(1000, 168, 0))
+for n in range(1, 6): sm.smooth(_shift_visible(squat(1000 + n * STEP, 168, 0), .18 + n * .008))
+rollback = sm.smooth(_shift_visible(squat(10, 168, 0), .15))
+rollback_clean = rollback.rel(LS) and not sm.pending()[LS]
+for n in range(1, 23): moved = sm.smooth(_shift_visible(squat(10 + n * STEP, 168, 0), .31 + n * .008))
+check('pan timestamp rollback preserves policy', rollback_clean and moved.rel(LS) and sm.reacquired > 0)
+
 hand_missing = Handstand(); hand_ground = Handstand(); hand_one_down = Handstand(); wall_single = WallSit()
 for n in range(60):
     h = handstand(n * STEP, 0, True)

@@ -77,6 +77,8 @@ public class CameraController {
     private final LifecycleOwner lifecycleOwner;
     private final PreviewView previewView;
     private final Listener listener;
+    /** 深蹲相机横移时逐帧重新检测人物，不复用连续跟踪的人体位置。 */
+    private final boolean detectPersonEveryFrame;
 
     private final ExecutorService analysisExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService videoExecutor = Executors.newSingleThreadExecutor();
@@ -124,10 +126,16 @@ public class CameraController {
 
     public CameraController(Context context, LifecycleOwner owner, PreviewView previewView,
                             Listener listener) {
+        this(context, owner, previewView, listener, false);
+    }
+
+    public CameraController(Context context, LifecycleOwner owner, PreviewView previewView,
+                            Listener listener, boolean detectPersonEveryFrame) {
         this.context = context.getApplicationContext();
         this.lifecycleOwner = owner;
         this.previewView = previewView;
         this.listener = listener;
+        this.detectPersonEveryFrame = detectPersonEveryFrame;
     }
 
     public boolean isFrontCamera() {
@@ -240,9 +248,12 @@ public class CameraController {
     }
 
     private PoseDetector createPoseDetector() {
-        // 实时模式：准确度优先（FULL 模型）以保证俯卧撑/倒立判定稳定
+        // 深蹲使用逐帧人物检测，不沿用可能已偏移的 STREAM 跟踪区域；
+        // 代价是更多推理开销，实际帧率与恢复效果仍须真机验证。
+        int mode = detectPersonEveryFrame ? AccuratePoseDetectorOptions.SINGLE_IMAGE_MODE
+                : AccuratePoseDetectorOptions.STREAM_MODE;
         AccuratePoseDetectorOptions options = new AccuratePoseDetectorOptions.Builder()
-                .setDetectorMode(AccuratePoseDetectorOptions.STREAM_MODE)
+                .setDetectorMode(mode)
                 .build();
         return PoseDetection.getClient(options);
     }

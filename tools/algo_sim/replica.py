@@ -134,8 +134,13 @@ class PoseSmoother:
     MIN_CONF = .3; BASE_ALPHA = .45; MAX_JUMP_RATIO = .6; HOLD_MS = 350
     REACQUIRE_MS = 700; MAX_CANDIDATE_GAP_MS = 350; LOST_TRACK_RESET_MS = 1000
     MIN_REACQUIRE_FRAMES = 3; REACQUIRE_CONF = .5
+    PAN_ANCHOR_CONF = .65; PAN_ANCHORS = (LS, LH, LA, RS, RH, RA)
 
-    def __init__(self):
+    def __init__(self, coherent_pan_recovery=False):
+        self.coherent_pan_recovery = coherent_pan_recovery
+        self.pan_mask = 0; self.pan_frames = 0; self.pan_start = 0; self.pan_last = 0; self.pan_dx = 0.
+        self.pan_safety_pending = False; self.pan_clear_start = None; self.pan_clear_last = None
+        self.last_complete_squat = None
         self.x = [0.] * N; self.y = [0.] * N; self.z = [0.] * N; self.conf = [0.] * N
         self.last_seen = [0] * N; self.last_observed = [0] * N; self.has = [False] * N
         self.last_scale = .2
@@ -166,23 +171,97 @@ class PoseSmoother:
         self.clast[i] = ts
         return self.cframes[i] >= self.MIN_REACQUIRE_FRAMES and ts - self.cstart[i] >= self.REACQUIRE_MS
 
+    def _clear_pan(self):
+        self.pan_mask = 0; self.pan_frames = 0; self.pan_start = 0; self.pan_last = 0; self.pan_dx = 0.
+
+    def _confirmed_horizontal_pan(self, raw, ts, scale, max_jump):
+        shifts, mask = [], 0
+        for bit, i in enumerate(self.PAN_ANCHORS):
+            px, _, _, conf = raw.p[i]
+            if self.has[i] and self.PAN_ANCHOR_CONF <= conf <= 1 and math.isfinite(px):
+                shifts.append(px - self.x[i]); mask |= 1 << bit
+        if mask & 0x07 != 0x07 and mask & 0x38 != 0x38:
+            self._clear_pan(); return None
+        shifts.sort(); count = len(shifts)
+        median = ((shifts[count // 2 - 1] + shifts[count // 2]) * .5
+                  if count % 2 == 0 else shifts[count // 2])
+        tolerance = max(.03, scale * .25)
+        if abs(median) <= max_jump or any(abs(dx - median) > tolerance for dx in shifts):
+            self._clear_pan(); return None
+        continuous = (self.pan_frames > 0 and mask == self.pan_mask and ts >= self.pan_last
+                      and ts - self.pan_last <= self.MAX_CANDIDATE_GAP_MS
+                      and median * self.pan_dx > 0 and abs(median - self.pan_dx) <= max(.04, scale * .30))
+        if continuous:
+            self.pan_frames += 1
+        else:
+            self.pan_mask = mask; self.pan_start = ts; self.pan_frames = 1
+        self.pan_last = ts; self.pan_dx = median
+        lost_long_enough = self.last_complete_squat is None or ts - self.last_complete_squat > 500
+        if (self.pan_frames >= self.MIN_REACQUIRE_FRAMES and ts - self.pan_start >= self.REACQUIRE_MS
+                and lost_long_enough):
+            self._clear_pan(); return median
+        return None
+
+    def _update_pan_safety(self, ts, loss_elapsed, complete):
+        if not self.pan_safety_pending: return
+        if loss_elapsed:
+            self.pan_safety_pending = False
+        elif self.pan_frames == 0 and complete:
+            if (self.pan_clear_start is None or ts < self.pan_clear_last
+                    or ts - self.pan_clear_last > self.MAX_CANDIDATE_GAP_MS):
+                self.pan_clear_start = ts
+            self.pan_clear_last = ts
+            if ts - self.pan_clear_start >= self.REACQUIRE_MS: self.pan_safety_pending = False
+        else:
+            self.pan_clear_start = None; self.pan_clear_last = None
+        if not self.pan_safety_pending:
+            self.pan_clear_start = None; self.pan_clear_last = None
+
+    @staticmethod
+    def _has_complete_squat(f):
+        torso = (f.rel(LS) and f.rel(LH)) or (f.rel(RS) and f.rel(RH))
+        leg = (f.rel(LH) and f.rel(LK) and f.rel(LA)) or (f.rel(RH) and f.rel(RK) and f.rel(RA))
+        return f.visible() and torso and leg
+
     def pending(self):
         return [n > 0 for n in self.cframes]
 
     def smooth(self, raw):
         ts = raw.ts
         if not self.initialized or ts < self.last_ts:
-            if self.initialized: self.__init__()
+            if self.initialized: self.__init__(self.coherent_pan_recovery)
             self.initialized = True; self.last_ts = ts
             for i in range(N):
                 px, py, pz, c = raw.p[i]
                 self.x[i], self.y[i], self.z[i], self.conf[i] = px, py, pz, c
                 self.has[i] = c >= self.MIN_CONF; self.last_seen[i] = ts; self.last_observed[i] = ts
+            if self.coherent_pan_recovery and self._has_complete_squat(raw): self.last_complete_squat = ts
             return raw
         scale = self._scale(ts); max_jump = max(.12, scale * self.MAX_JUMP_RATIO)
+        pan_dx = self._confirmed_horizontal_pan(raw, ts, scale, max_jump) if self.coherent_pan_recovery else None
+        if self.coherent_pan_recovery and self.pan_frames > 0: self.pan_safety_pending = True
+        loss_elapsed = self.last_complete_squat is None or ts - self.last_complete_squat > 500
+        pan_outliers = [False] * N
+        if pan_dx is not None:
+            max_vertical = max(.18, scale * 1.2)
+            for i in range(N):
+                px, py, _, c = raw.p[i]
+                dx, dy = px - self.x[i], py - self.y[i]
+                if (self.has[i] and self.MIN_CONF <= c <= 1 and math.isfinite(dx) and math.isfinite(dy)
+                        and abs(dx - pan_dx) <= max_jump and abs(dy) <= max_vertical):
+                    self.reacquired += 1; self.has[i] = False; self.cframes[i] = 0
+                elif self.has[i] and c >= self.MIN_CONF:
+                    pan_outliers[i] = True
         output = {}
         for i in range(N):
             px, py, pz, c = raw.p[i]
+            if pan_outliers[i]:
+                self.last_observed[i] = ts
+                if c >= self.REACQUIRE_CONF: self._candidate(i, px, py, ts, max(.03, scale * .25))
+                else: self.cframes[i] = 0
+                self.rejected += 1
+                output[i] = (self.x[i], self.y[i], self.z[i], self._held_confidence(i, ts) * .8)
+                continue
             if c >= self.MIN_CONF:
                 if self.has[i] and ts - self.last_observed[i] > self.LOST_TRACK_RESET_MS:
                     self.has[i] = False; self.cframes[i] = 0
@@ -192,6 +271,8 @@ class PoseSmoother:
                     if math.hypot(dx, dy) > max_jump:
                         stable = c >= self.REACQUIRE_CONF and self._candidate(i, px, py, ts, max(.03, scale * .25))
                         if c < self.REACQUIRE_CONF: self.cframes[i] = 0
+                        if stable and self.coherent_pan_recovery and self.pan_safety_pending and not loss_elapsed:
+                            stable = False
                         if stable:
                             self.x[i], self.y[i], self.z[i], self.conf[i] = px, py, pz, c
                             self.last_seen[i] = ts; self.cframes[i] = 0; self.reacquired += 1
@@ -217,7 +298,12 @@ class PoseSmoother:
                 if ts - self.last_observed[i] > self.LOST_TRACK_RESET_MS: self.has[i] = False
                 output[i] = (0., 0., 0., 0.)
         self.last_ts = ts
-        return F(output, ts)
+        result = F(output, ts)
+        if self.coherent_pan_recovery:
+            complete = self._has_complete_squat(result)
+            self._update_pan_safety(ts, loss_elapsed, complete)
+            if complete: self.last_complete_squat = ts
+        return result
 
 
 class FrameGapGuard:

@@ -46,7 +46,7 @@ public class WorkoutRecorder implements ExerciseAnalyzer, RepListener, HoldListe
     private final ExerciseAnalyzer delegate;
     private final RepAnalyzer repAnalyzer;
     private final HoldAnalyzer holdAnalyzer;
-    private final PoseSmoother smoother = new PoseSmoother();
+    private final PoseSmoother smoother;
     private final FrameGapGuard gapGuard = new FrameGapGuard();
 
     private PoseLogWriter writer;
@@ -64,6 +64,8 @@ public class WorkoutRecorder implements ExerciseAnalyzer, RepListener, HoldListe
         this.recordPose = recordPose;
         this.listener = listener;
         ExerciseType type = session.getExerciseType();
+        // 深蹲允许多关键点一致横移后整体恢复；其余动作仍沿用原有逐点策略。
+        smoother = new PoseSmoother(type == ExerciseType.SQUAT);
         if (type.isTimerExercise()) {
             HoldAnalyzer analyzer = createHoldAnalyzer(type);
             holdAnalyzer = analyzer;
