@@ -97,7 +97,7 @@ public class PikeCatalogIntegrationTest {
 
             menu = open(context, ExerciseListActivity.class);
             final Activity menuScreen = menu;
-            onMain(() -> assertEquals(10,
+            onMain(() -> assertEquals(11,
                     ((RecyclerView) menuScreen.findViewById(R.id.rvExercises)).getAdapter().getItemCount()));
             RecyclerView.ViewHolder normalCard = exerciseAt(menu, 3);
             onMain(() -> {
@@ -111,19 +111,24 @@ public class PikeCatalogIntegrationTest {
                 assertEquals("最佳 7 次 · 共 1 次训练",
                         ((TextView) pikeCard.itemView.findViewById(R.id.tvBest)).getText().toString());
             });
+            RecyclerView.ViewHolder jackCard = exerciseAt(menu, 10);
+            onMain(() -> assertEquals("开合跳",
+                    ((TextView) jackCard.itemView.findViewById(R.id.tvTitle)).getText().toString()));
             onMain(menuScreen::finish); menu = null;
             history = open(context, HistoryActivity.class);
             final Activity historyScreen = history;
             waitText(history, R.id.tvExerciseKinds, "2");
             onMain(() -> {
                 LinearLayout chips = historyScreen.findViewById(R.id.chipGroup);
-                boolean sawPike = false;
+                boolean sawPike = false, sawJack = false;
                 for (int i = 0; i < chips.getChildCount(); i++) {
                     String text = ((TextView) chips.getChildAt(i)).getText().toString();
                     assertNotEquals("不标准俯卧撑", text);
                     sawPike |= "折刀俯卧撑".equals(text);
+                    sawJack |= "开合跳".equals(text);
                 }
                 assertTrue(sawPike);
+                assertTrue(sawJack);
             });
             chip(history, "俯卧撑");
             onMain(() -> assertTrue(((TextView) historyScreen.findViewById(R.id.tvSubtitle))

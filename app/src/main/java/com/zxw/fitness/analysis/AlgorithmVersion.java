@@ -11,9 +11,12 @@ import com.zxw.fitness.model.ExerciseType;
 public final class AlgorithmVersion {
     public static final String CURRENT = "fitness-2026-10-stream1";
     public static final String PIKE_CURRENT = "fitness-2026-10-pike1";
+    public static final String JUMPING_JACK_CURRENT = "fitness-2026-11-jack1";
 
     public static String forExercise(ExerciseType type) {
-        return type == ExerciseType.PIKE_PUSHUP ? PIKE_CURRENT : CURRENT;
+        if (type == ExerciseType.PIKE_PUSHUP) return PIKE_CURRENT;
+        if (type == ExerciseType.JUMPING_JACK) return JUMPING_JACK_CURRENT;
+        return CURRENT;
     }
 
     private AlgorithmVersion() { }

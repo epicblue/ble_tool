@@ -39,6 +39,7 @@ public class ExerciseListActivity extends Activity {
             case WALL_HANDSTAND: return "🧗";
             case CHAIR_PUSHUP: return "🪑";
             case PIKE_PUSHUP: return "🔺";
+            case JUMPING_JACK: return "🌟";
             case PLANK: return "🧘";
             case SQUAT: return "🏋";
             case PULLUP: return "🧲";

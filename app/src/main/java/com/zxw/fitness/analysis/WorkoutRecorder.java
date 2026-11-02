@@ -69,7 +69,7 @@ public class WorkoutRecorder implements ExerciseAnalyzer, RepListener, HoldListe
         ExerciseType type = session.getExerciseType();
         session.setAlgorithmVersion(AlgorithmVersion.forExercise(type));
         session.setTimelineFile(null);
-        smoother = new PoseSmoother();
+        smoother = new PoseSmoother(type);
         if (type.isTimerExercise()) {
             HoldAnalyzer analyzer = createHoldAnalyzer(type);
             holdAnalyzer = analyzer;
@@ -104,6 +104,9 @@ public class WorkoutRecorder implements ExerciseAnalyzer, RepListener, HoldListe
         }
         if (type == ExerciseType.PIKE_PUSHUP) {
             return new PikePushUpCounter(this);
+        }
+        if (type == ExerciseType.JUMPING_JACK) {
+            return new JumpingJackCounter(this);
         }
         if (type == ExerciseType.PULLUP) {
             return new PullUpCounter(this);

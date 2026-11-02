@@ -1,5 +1,6 @@
 package com.zxw.fitness.pose;
 
+import com.zxw.fitness.model.ExerciseType;
 import com.zxw.fitness.model.PoseFrame;
 
 /**
@@ -9,7 +10,7 @@ import com.zxw.fitness.model.PoseFrame;
  *     <li><b>抖动</b>：相邻帧坐标来回跳，导致肘角/膝角在阈值附近反复穿越 → 用指数滑动平均抑制；</li>
  *     <li><b>瞬时丢失</b>：个别帧某个关键点置信度掉到阈值以下（遮挡、运动模糊）→ 用"保持最近值"补齐，
  *     最多 {@link #HOLD_MS} 毫秒；</li>
- *     <li><b>跳变</b>：偏差超过 {@link #MAX_JUMP_RATIO} × 身体尺度时暂不采用，旧值随时间失效；
+ *     <li><b>跳变</b>：偏差超过门槛时暂不采用，旧值随时间失效（开合跳腕/踝可按帧间隔适度放宽）；
  *     新位置连续稳定一段时间后才重新接纳，避免关键点永久冻结。</li>
  * </ol>
  *
@@ -46,6 +47,13 @@ public class PoseSmoother {
     private final long[] candidateStartMs = new long[PoseFrame.LANDMARK_COUNT];
     private final long[] candidateLastMs = new long[PoseFrame.LANDMARK_COUNT];
     private final int[] candidateFrames = new int[PoseFrame.LANDMARK_COUNT];
+
+    /** 开合跳的双腕/双踝可在相对稀疏的帧中快速移动，其他动作保持原滤波参数。 */
+    private final boolean jumpingJack;
+
+    public PoseSmoother() { this(null); }
+
+    public PoseSmoother(ExerciseType type) { jumpingJack = type == ExerciseType.JUMPING_JACK; }
 
     private boolean initialized;
     private long lastTimestampMs;
@@ -107,6 +115,10 @@ public class PoseSmoother {
         // 不用过期或只重捕获一半的躯干扩大跳变阈值；缺少新鲜双点时沿用上次尺度。
         float scale = estimateScale(ts);
         float maxJump = Math.max(0.12f, scale * MAX_JUMP_RATIO);
+        // 仅开合跳的腕/踝按帧间隔适度放宽，比例系数最多 1.25，保留 0.12 下限；
+        // 较大的异常仍走稳定重捕获。旧动作和人体主体关键点保持原阈值。
+        float limbJump = jumpingJack ? Math.max(maxJump, scale * (MAX_JUMP_RATIO
+                + 0.65f * clamp((ts - lastTimestampMs) / 100f, 0f, 1f))) : maxJump;
 
         float[] outX = new float[PoseFrame.LANDMARK_COUNT];
         float[] outY = new float[PoseFrame.LANDMARK_COUNT];
@@ -127,7 +139,9 @@ public class PoseSmoother {
                     float dx = raw.getX(i) - x[i];
                     float dy = raw.getY(i) - y[i];
                     float jump = (float) Math.sqrt(dx * dx + dy * dy);
-                    if (jump > maxJump) {
+                    float jumpLimit = jumpingJack && (i == PoseFrame.LEFT_WRIST || i == PoseFrame.RIGHT_WRIST
+                            || i == PoseFrame.LEFT_ANKLE || i == PoseFrame.RIGHT_ANKLE) ? limbJump : maxJump;
+                    if (jump > jumpLimit) {
                         float tolerance = Math.max(0.03f, scale * 0.25f);
                         boolean stable = rawConf >= REACQUIRE_CONF
                                 && updateCandidate(i, raw.getX(i), raw.getY(i), ts, tolerance);

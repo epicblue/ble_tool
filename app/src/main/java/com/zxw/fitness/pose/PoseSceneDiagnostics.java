@@ -23,6 +23,7 @@ public final class PoseSceneDiagnostics {
     private static final int[] PULL_PARTS = {SHOULDER, ELBOW, WRIST, HIP};
     private static final int[] PLANK_PARTS = {SHOULDER, WRIST, HIP, ANKLE};
     private static final int[] HOLD_PARTS = {SHOULDER, HIP, ANKLE};
+    private static final int[] JACK_PARTS = {SHOULDER, WRIST, HIP, ANKLE};
     private static final float MIN_TORSO_WIDTH = 0.07f;
     private static final float EDGE_FRACTION = 0.025f;
 
@@ -47,10 +48,11 @@ public final class PoseSceneDiagnostics {
             int left = JOINTS[part][0], right = JOINTS[part][1];
             boolean l = good(frame, left, width, height, pixels);
             boolean r = good(frame, right, width, height, pixels);
-            boolean needBoth = type == ExerciseType.RUNNING && part == ANKLE;
+            boolean needBoth = (type == ExerciseType.RUNNING && part == ANKLE)
+                    || type == ExerciseType.JUMPING_JACK;
             if ((!l && !r) || (needBoth && !(l && r))) {
                 if (missing.length() > 0) missing.append('、');
-                missing.append(needBoth ? "双脚踝" : NAMES[part]);
+                missing.append(needBoth ? "双" + NAMES[part] : NAMES[part]);
                 anyOutside |= (!l && outside(frame, left, width, height, pixels))
                         || (!r && outside(frame, right, width, height, pixels));
             }
@@ -83,7 +85,24 @@ public final class PoseSceneDiagnostics {
                 return new PoseSceneResult(PoseSceneResult.Quality.WARNING, count, JOINTS.length * 2, "同侧髋、膝、踝未完整入镜，角度可能不稳定");
             }
         }
-        // 单侧仍可参与判定，但已明确出画的另一侧也值得提示。
+        if (type == ExerciseType.JUMPING_JACK) {
+            float shoulderWidth = Math.abs(frame.getX(PoseFrame.LEFT_SHOULDER)
+                    - frame.getX(PoseFrame.RIGHT_SHOULDER));
+            float sx = (frame.getX(PoseFrame.LEFT_SHOULDER) + frame.getX(PoseFrame.RIGHT_SHOULDER)) / 2f;
+            float sy = (frame.getY(PoseFrame.LEFT_SHOULDER) + frame.getY(PoseFrame.RIGHT_SHOULDER)) / 2f;
+            float hx = (frame.getX(PoseFrame.LEFT_HIP) + frame.getX(PoseFrame.RIGHT_HIP)) / 2f;
+            float hy = (frame.getY(PoseFrame.LEFT_HIP) + frame.getY(PoseFrame.RIGHT_HIP)) / 2f;
+            float torso = PoseMath.distance(sx, sy, hx, hy);
+            if (torso / (pixels ? width : 1f) < 0.04f) {
+                return new PoseSceneResult(PoseSceneResult.Quality.WARNING, count, JOINTS.length * 2,
+                        "人体较小，建议靠近相机并保持全身入镜");
+            }
+            if (shoulderWidth / torso < 0.25f) {
+                return new PoseSceneResult(PoseSceneResult.Quality.WARNING, count, JOINTS.length * 2,
+                        "开合跳请尽量正对或背对镜头，让双臂和双脚完整入镜");
+            }
+        }
+        // 对允许单侧的动作，明确出画的另一侧也值得提示。
         for (int part : required) {
             for (int side = 0; side < 2; side++) {
                 int lm = JOINTS[part][side];
@@ -120,6 +139,7 @@ public final class PoseSceneDiagnostics {
     private static int[] requiredParts(ExerciseType type) {
         if (type == ExerciseType.PUSHUP || type == ExerciseType.CHAIR_PUSHUP
                 || type == ExerciseType.BAD_PUSHUP || type == ExerciseType.PIKE_PUSHUP) return PUSH_PARTS;
+        if (type == ExerciseType.JUMPING_JACK) return JACK_PARTS;
         if (type == ExerciseType.SQUAT || type == ExerciseType.WALL_SIT) return LEG_PARTS;
         if (type == ExerciseType.PULLUP) return PULL_PARTS;
         if (type == ExerciseType.PLANK) return PLANK_PARTS;

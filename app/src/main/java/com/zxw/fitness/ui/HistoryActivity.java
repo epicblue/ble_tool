@@ -223,6 +223,7 @@ public class HistoryActivity extends Activity {
             case WALL_HANDSTAND: return "🧗";
             case CHAIR_PUSHUP: return "🪑";
             case PIKE_PUSHUP: return "🔺";
+            case JUMPING_JACK: return "🌟";
             case BAD_PUSHUP: return "💪";
             case PLANK: return "🧘";
             case SQUAT: return "🏋";

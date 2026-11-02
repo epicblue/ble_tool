@@ -144,6 +144,8 @@ public class ReplayTimeline {
             repAnalyzer = new SquatCounter(null);
         } else if (type == ExerciseType.PIKE_PUSHUP) {
             repAnalyzer = new PikePushUpCounter(null);
+        } else if (type == ExerciseType.JUMPING_JACK) {
+            repAnalyzer = new JumpingJackCounter(null);
         } else if (type == ExerciseType.PULLUP) {
             repAnalyzer = new PullUpCounter(null);
         } else if (type == ExerciseType.RUNNING) {

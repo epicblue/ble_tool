@@ -35,4 +35,4 @@ python3 tools/algo_sim/experiments.py    # 输出 docs/algorithm-plan.md 里的�
 - 复刻里出现的"镜头横滚/横向压缩"只是几何变换，用来模拟机位，不是真实拍摄数据；
   真实准确率仍以真机录制为准（见 `docs/algorithm-plan.md` 第 4 节 ⑫）。
 
-折刀俯卧撑、深蹲的原始模型冻结恢复与版本缓存没有 Python 镜像；请分别运行 Java 的 `PikePushUpTest`、`FrozenPoseRecoveryTest`、`RecordedTimelineTest` 和 `VideoReanalysisRunnerTest`。Python 的 119 条断言不覆盖折刀或历史合并。
+折刀俯卧撑、开合跳及其专用腕踝滤波、深蹲的原始模型冻结恢复与版本缓存没有 Python 镜像；请分别运行 Java 的 `PikePushUpTest`、`JumpingJackTest`、`FrozenPoseRecoveryTest`、`RecordedTimelineTest` 和 `VideoReanalysisRunnerTest`。Python 的 119 条断言不覆盖折刀、开合跳或历史合并。

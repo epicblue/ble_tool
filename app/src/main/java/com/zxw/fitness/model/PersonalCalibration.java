@@ -56,7 +56,7 @@ public final class PersonalCalibration {
     /** 俯卧撑为髋偏移比例；深蹲为前倾角；折刀为最大肩髋踝夹角。 */
     public float getMaxForm() { return maxForm; }
     public float getMinHipAngle() { return minHipAngle; }
-    /** 深蹲、引体和折刀的最小相对移动量。 */
+    /** 深蹲、引体、折刀及开合跳的最小相对移动量。 */
     public float getMinMovement() { return minMovement; }
     public boolean isKneelingAllowed() { return allowKneeling; }
     public boolean hasFormWarning() { return formWarning; }
@@ -101,7 +101,13 @@ public final class PersonalCalibration {
                 && (type != ExerciseType.PIKE_PUSHUP || (!allowKneeling
                 && maxForm >= 145f && maxForm <= 165f
                 && minMovement >= 0.02f && minMovement <= 0.10f
-                && capturedMovement >= 0.025f));
+                && capturedMovement >= 0.025f))
+                && (type != ExerciseType.JUMPING_JACK || (!allowKneeling
+                && targetDepth >= 0.33f && targetDepth <= 1f
+                && capturedAngle >= 55f && capturedMovement >= 0.12f
+                && targetDepth * 135f <= capturedAngle + 0.01f
+                && minMovement >= 0.10f && minMovement <= 0.35f
+                && minMovement <= capturedMovement + 0.001f));
     }
 
     private static boolean finite(float value) {
@@ -136,6 +142,12 @@ public final class PersonalCalibration {
                     startingAngle, Math.max(0f, startingAngle - (startingAngle
                             - referenceAngle(startingAngle, 95f)) * targetDepth),
                     minMovement, capturedAngle, capturedMovement, extra);
+        }
+        if (type == ExerciseType.JUMPING_JACK) {
+            return String.format(Locale.CHINA,
+                    "双臂肩部夹角至少 %.1f°；双脚间距较合拢位增加至少 %.2f 倍躯干，左右脚都需向外打开。"
+                            + "\n采样：肩部夹角 %.1f°，间距增加 %.2f 倍躯干%s",
+                    135f * targetDepth, minMovement, capturedAngle, capturedMovement, extra);
         }
         if (type == ExerciseType.PIKE_PUSHUP) {
             return String.format(Locale.CHINA,

@@ -91,7 +91,7 @@ public final class VideoReanalysisRunner {
             List<PoseFrame> rawFrames = new ArrayList<>(total);
             List<PoseFrame> filteredFrames = new ArrayList<>(total);
             List<boolean[]> pendingJumps = new ArrayList<>(total);
-            PoseSmoother smoother = new PoseSmoother();
+            PoseSmoother smoother = new PoseSmoother(session.getExerciseType());
             FrozenPoseRecovery recovery = session.getExerciseType() == ExerciseType.SQUAT
                     ? new FrozenPoseRecovery() : null;
             int sourceWidth = 0;

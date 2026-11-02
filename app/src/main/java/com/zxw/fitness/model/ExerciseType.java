@@ -61,6 +61,11 @@ public enum ExerciseType {
     /** 跑步计步：用左右脚交替抬起统计步数。 */
     RUNNING("running", "跑步计步", "步", Unit.COUNT,
             "原地跑或原地踏步，全身入镜；按左右脚交替抬起统计步数与步频。",
+            false, false),
+
+    /** 开合跳：双脚分开、双臂上举，然后合拢返回。 */
+    JUMPING_JACK("jumping_jack", "开合跳", "次", Unit.COUNT,
+            "正对固定手机、全身入镜；双脚并拢、双臂放下，跳开时双臂上举，再回到起始位。",
             false, false);
 
     public enum Unit {
@@ -119,7 +124,7 @@ public enum ExerciseType {
     /** 支持以一次往返的个人幅度作为目标；计时和步数动作暂不使用此校准。 */
     public boolean supportsPersonalCalibration() {
         return this == PUSHUP || this == CHAIR_PUSHUP || this == BAD_PUSHUP
-                || this == PIKE_PUSHUP || this == SQUAT || this == PULLUP;
+                || this == PIKE_PUSHUP || this == SQUAT || this == PULLUP || this == JUMPING_JACK;
     }
 
     /** 是否为靠墙类动作（需要额外的墙面判定）。 */
