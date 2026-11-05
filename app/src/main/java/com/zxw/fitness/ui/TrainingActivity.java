@@ -18,6 +18,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import androidx.camera.view.PreviewView;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
@@ -33,6 +34,7 @@ import com.zxw.fitness.analysis.RepAnalyzer;
 import com.zxw.fitness.analysis.RepEvent;
 import com.zxw.fitness.analysis.WorkoutRecorder;
 import com.zxw.fitness.camera.CameraController;
+import com.zxw.fitness.camera.CameraPreviewTransform;
 import com.zxw.fitness.camera.SkeletonOverlay;
 import com.zxw.fitness.data.SessionStore;
 import com.zxw.fitness.data.UserStore;
@@ -200,8 +202,9 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
                     return;
                 }
                 if (camera != null) {
+                    overlay.setFrame(null);
+                    overlay.setPendingJumps(null);
                     camera.setFrontCamera(!camera.isFrontCamera());
-                    overlay.setMirrored(camera.isFrontCamera());
                 }
             }
         });
@@ -319,7 +322,6 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
         camera = new CameraController(this, this, previewView, this,
                 exerciseType == ExerciseType.SQUAT);
         camera.start();
-        overlay.setMirrored(camera.isFrontCamera());
     }
 
     @Override
@@ -342,8 +344,8 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
         if (running) {
             return;
         }
-        if (camera == null) {
-            Toast.makeText(this, "相机还没准备好，请稍候再试", Toast.LENGTH_SHORT).show();
+        if (camera == null || !camera.isReady()) {
+            Toast.makeText(this, "相机预览还没准备好，请稍候再试", Toast.LENGTH_SHORT).show();
             return;
         }
         UserProfile updated = UserStore.getById(this, user.getId());
@@ -735,8 +737,16 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
     };
 
     @Override
+    public void onPreviewUnavailable() {
+        overlay.setPendingJumps(null);
+        overlay.setFrame(null);
+        lastSceneUpdateAt = -1;
+    }
+
+    @Override
     public void onPose(@NonNull PoseFrame frame, @NonNull PoseFrame displayFrame,
-                       int uprightWidth, int uprightHeight, float rollDegrees) {
+                       int uprightWidth, int uprightHeight, float rollDegrees,
+                       @Nullable CameraPreviewTransform previewTransform) {
         if (!lifecycleRegistry.getCurrentState().isAtLeast(Lifecycle.State.RESUMED)) return;
         long now = SystemClock.elapsedRealtime();
         if (lastPoseReceivedAt >= 0 && now - lastPoseReceivedAt > FrameGapGuard.MAX_FRAME_GAP_MS) {
@@ -748,10 +758,13 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
             recorder.onPose(frame, uprightWidth, uprightHeight, rollDegrees);
             pending = recorder.getPendingJumps();
         }
-        overlay.setSourceSize(uprightWidth, uprightHeight);
-        overlay.setPixelCoordinates(false);
+        int[] previewLocation = new int[2];
+        int[] overlayLocation = new int[2];
+        previewView.getLocationInWindow(previewLocation);
+        overlay.getLocationInWindow(overlayLocation);
         overlay.setPendingJumps(pending);
-        overlay.setFrame(displayFrame);
+        overlay.setCameraFrame(displayFrame, uprightWidth, uprightHeight, previewTransform,
+                previewLocation[0], previewLocation[1], overlayLocation[0], overlayLocation[1]);
         if (lastSceneUpdateAt < 0 || now - lastSceneUpdateAt >= 250) {
             PoseSceneResult result = PoseSceneDiagnostics.inspect(
                     displayFrame, exerciseType, uprightWidth, uprightHeight, false);
@@ -763,13 +776,15 @@ public class TrainingActivity extends Activity implements LifecycleOwner,
             boolean slow = now < slowFrameWarningUntil;
             // 警告靠前放，窄屏最多显示四行时也不被长诊断挤掉。
             String timingText = slow ? "识别偏慢，可能漏计或难以恢复 · " : "";
+            String mappingText = previewTransform == null ? "预览对齐准备中 · " : "";
 
             String notice = now < recoveryNoticeUntil ? recoveryNotice + " · " : "";
             String legend = showMarkerDetails ? "绿≥50% 黄30–49% 紫=待定；无点=缺失/出画"
                     : "详细标记已关闭；基本骨架仍显示";
-            tvSceneDiagnosis.setText(notice + timingText + "原始 " + result.reliablePoints + "/" + result.totalPoints
+            tvSceneDiagnosis.setText(mappingText + notice + timingText + "原始 " + result.reliablePoints + "/" + result.totalPoints
                     + " · " + result.message + pendingText + "\n" + legend);
-            int color = result.quality == PoseSceneResult.Quality.USABLE && pendingCount == 0 && !slow
+            int color = previewTransform != null && result.quality == PoseSceneResult.Quality.USABLE
+                    && pendingCount == 0 && !slow
                     ? R.color.fit_text : R.color.fit_warn;
             tvSceneDiagnosis.setTextColor(ContextCompat.getColor(this, color));
             lastSceneUpdateAt = now;

@@ -3,8 +3,10 @@ package com.zxw.fitness.camera;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.PointF;
+import android.graphics.RectF;
 import android.util.AttributeSet;
 import android.view.View;
 
@@ -12,7 +14,7 @@ import androidx.annotation.Nullable;
 
 import com.zxw.fitness.model.PoseFrame;
 
-/** 把关键点和置信度标记画在预览/视频上。采用 FIT_CENTER 与画面等比对齐。 */
+/** 实时预览使用 CameraX 的坐标变换；旧骨架和视频回放保留 FIT_CENTER。 */
 public class SkeletonOverlay extends View {
     private static final float DRAW_CONF = 0.3f;
     private static final int COLOR_GOOD = Color.rgb(76, 224, 179);
@@ -52,6 +54,9 @@ public class SkeletonOverlay extends View {
     private int sourceWidth = 9;
     private int sourceHeight = 16;
     private boolean mirrored;
+    private boolean cameraFrame;
+    private Matrix cameraToOverlay;
+    private RectF cameraVisibleSource;
     /** v1 旧骨架为像素坐标；新骨架的 x/y 都按源画面宽度归一化。 */
     private boolean pixelCoordinates;
     private boolean showSkeleton = true;
@@ -108,7 +113,7 @@ public class SkeletonOverlay extends View {
         }
     }
 
-    /** 前置摄像头预览是镜像的，骨架也要镜像以对齐。 */
+    /** 仅用于 FIT_CENTER 回放路径；实时预览的镜像由 CameraX 变换处理。 */
     public void setMirrored(boolean mirrored) {
         this.mirrored = mirrored;
         invalidate();
@@ -131,12 +136,50 @@ public class SkeletonOverlay extends View {
     /** 原始点暂被滤波器拒绝时用紫圈提示；录制骨架没有待定信息，视频重识别可显示。 */
     public void setPendingJumps(@Nullable boolean[] pending) { pendingJumps = pending; }
 
+    /** 回放路径（包括 v1 像素坐标）继续采用原有 FIT_CENTER。 */
     public void setFrame(@Nullable PoseFrame frame) {
         this.frame = frame;
+        cameraFrame = false;
+        cameraToOverlay = null;
+        cameraVisibleSource = null;
+        invalidate();
+    }
+
+    /**
+     * 实时原始帧只按对应的相机变换绘制；变换未准备好时宁可不画，也不回退到猜测缩放。
+     * 两个视图的窗口坐标可能不同，需把 PreviewView 的原点换成叠加层的原点。
+     */
+    public void setCameraFrame(@Nullable PoseFrame frame, int width, int height,
+                               @Nullable CameraPreviewTransform transform,
+                               int previewWindowX, int previewWindowY,
+                               int overlayWindowX, int overlayWindowY) {
+        this.frame = frame;
+        cameraFrame = true;
+        pixelCoordinates = false;
+        if (width > 0 && height > 0) {
+            sourceWidth = width;
+            sourceHeight = height;
+        }
+        cameraToOverlay = transform == null ? null : transform.copyPixelsToPreview();
+        cameraVisibleSource = transform == null ? null : transform.copyVisibleSource();
+        if (cameraToOverlay != null) {
+            cameraToOverlay.postTranslate(previewWindowX - overlayWindowX,
+                    previewWindowY - overlayWindowY);
+        }
         invalidate();
     }
 
     public PoseFrame getFrame() { return frame; }
+
+    @Override
+    protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+        super.onSizeChanged(w, h, oldw, oldh);
+        if (cameraFrame && (w != oldw || h != oldh)) {
+            // 布局改变后旧矩阵不再可靠，等待下一次识别刷新。
+            cameraToOverlay = null;
+            cameraVisibleSource = null;
+        }
+    }
 
     @Override
     protected void onDraw(Canvas canvas) {
@@ -146,20 +189,36 @@ public class SkeletonOverlay extends View {
         float viewWidth = getWidth();
         float viewHeight = getHeight();
         if (viewWidth <= 0 || viewHeight <= 0) return;
+        if (cameraFrame && (cameraToOverlay == null || cameraVisibleSource == null)) return;
         float scale = Math.min(viewWidth / sourceWidth, viewHeight / sourceHeight);
         float offsetX = (viewWidth - sourceWidth * scale) / 2f;
         float offsetY = (viewHeight - sourceHeight * scale) / 2f;
         float unit = pixelCoordinates ? 1f : sourceWidth;
         PointF[] points = new PointF[PoseFrame.LANDMARK_COUNT];
         boolean[] weak = new boolean[PoseFrame.LANDMARK_COUNT];
+        float[] mappedPoint = new float[2];
         for (int lm : PoseFrame.LANDMARK_SUBSET) {
             float confidence = f.getConfidence(lm);
             if (Float.isNaN(confidence) || Float.isInfinite(confidence) || confidence > 1f
                     || confidence < (showDetails ? DRAW_CONF : 0.5f)
                     || !f.isWithinImage(lm, sourceWidth, sourceHeight, pixelCoordinates)) continue;
-            float px = offsetX + f.getX(lm) * unit * scale;
-            float py = offsetY + f.getY(lm) * unit * scale;
-            if (mirrored) px = viewWidth - px;
+            float sourceX = f.getX(lm) * unit;
+            float sourceY = f.getY(lm) * unit;
+            float px, py;
+            if (cameraFrame) {
+                // 模型可能看到共同视口以外的画面，那里没有显示在预览里。
+                if (sourceX < cameraVisibleSource.left || sourceX > cameraVisibleSource.right
+                        || sourceY < cameraVisibleSource.top || sourceY > cameraVisibleSource.bottom) continue;
+                mappedPoint[0] = sourceX;
+                mappedPoint[1] = sourceY;
+                cameraToOverlay.mapPoints(mappedPoint);
+                px = mappedPoint[0];
+                py = mappedPoint[1];
+            } else {
+                px = offsetX + sourceX * scale;
+                py = offsetY + sourceY * scale;
+                if (mirrored) px = viewWidth - px;
+            }
             points[lm] = new PointF(px, py);
             weak[lm] = confidence < 0.5f;
         }

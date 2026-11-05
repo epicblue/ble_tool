@@ -1,6 +1,6 @@
 # 人体骨架与姿态识别算法
 
-> [算法索引](README.md) · 对照当前代码：恢复连续跟踪及旧逐点滤波，增加深蹲冻结恢复和版本化回放，资料检索至 2026-10-27。本文区分模型输出、应用显示、动作判定及回放；以下方案对比不是本项目的实测排名。
+> [算法索引](README.md) · 对照当前代码：连续跟踪、深蹲冻结恢复、版本化回放和实时预览坐标映射，资料检索至 2026-11-05。本文区分模型输出、应用显示、动作判定及回放；以下方案对比不是本项目的实测排名。
 
 ## 1. 任务与使用场景
 
@@ -11,10 +11,11 @@
 ## 2. 当前数据流
 
 ```text
-CameraX ImageAnalysis（16:9 目标比例、保留最新帧）
+CameraX Preview + ImageAnalysis + VideoCapture（共同 ViewPort；分析保留最新帧）
   → ML Kit Accurate（STREAM；深蹲疑似冻结时尝试新 STREAM），异步输出 33 点
   → 像素坐标按摆正后画面宽归一化
-  ├─ 原始帧 → 实时骨架 + 场景诊断（不经本应用的 PoseSmoother）
+  ├─ 原始帧 → CameraX 视口/旋转/镜像变换 → 实时骨架；原始帧 → 场景诊断
+  │           （显示不经本应用的 PoseSmoother）
   └─ 剔除画面外点 → 按最近传感器横滚角旋转
        → 逐点平滑、丢失保持、跳变暂拒/重捕获（开合跳腕/踝单独放宽）
        → 帧间隔保护 → 各动作判定器
@@ -31,9 +32,11 @@ CameraX ImageAnalysis（16:9 目标比例、保留最新帧）
 ### 3.1 边界、显示与时间
 
 - 动作输入在旋转前将越界或无效点的可信度置零；实时诊断仍查看原始帧，绘制时不画越界点。开启详细标记时显示绿点 ≥0.5、黄点 0.3–0.49；关闭后仅显示 ≥0.5 的基本骨架。紫圈表示训练滤波器正在等待该点的大跳变候选，不表示原始点已被修正。
-- `PreviewView` 和 `SkeletonOverlay` 都按 `FIT_CENTER` 居中适配；前摄骨架额外水平镜像。代码没有通过共同 `ViewPort` / CameraX 坐标变换明确统一预览与分析裁剪，机型差异可能导致偏移，**尚未证实在哪些设备发生**。
+- 实时预览使用 `PreviewView` 的 `FIT_CENTER` / `COMPATIBLE` 模式；预览、分析、录像通过同一个 `UseCaseGroup` 和 `ViewPort` 绑定。三路不受支持时仍用同一个视口绑定预览 + 分析，只能保存骨架。相同的 16:9 请求本身不能保证各路使用同一传感器区域，旧版仅分别 FIT_CENTER 的画法存在空间错位风险。
+- ML Kit 由 `InputImage.fromMediaImage` 接收完整图像和旋转角。`ImageProxyTransformFactory` 使用摆正后的全图坐标（启用旋转、不把 crop 左上角当作坐标原点），`CoordinateTransform` 将其映射到同一视口的 `PreviewView.getOutputTransform()`；目标已包含前摄镜像，实时叠加层不再手动镜像。未显示的视口外点不画在黑边上；这不改变用于计数的完整分析图坐标。
+- 视图尚未布局时等 `ViewPort` 准备好再绑定；切镜头或新 surface 出现后等预览可见，变换缺失、裁剪无效或前后摄镜像方向不匹配时隐藏实时骨架，不退回猜测缩放。叠加层尺寸变化先丢弃旧绘制矩阵，下一帧再计算。计数和录制仍使用原有坐标，不会因为显示变换而重算旧历史。`PreviewView` 的 STREAMING 状态不带会话编号，若旧状态在新 surface 请求后迟到，门控无法完全证明它属于新预览；镜像方向校验也无法识别同镜头的所有旧变换。以上是代码层面的处理，真实 CameraX/机型行为仍需测试。
 - 识别异步完成后覆盖在独立刷新的预览上，没有按采集帧同步预览与骨架；推理慢或动作快时可能看见滞后。当前没有真实设备的延迟/FPS 基线。
-- v2 骨架文件存相对首骨架帧的时间、横滚角及 17 点；录制骨架回放显示时逆旋转，判定仍使用对齐后的滤波帧。旧 v1 无横滚数据，历史日志也无法恢复当时的原始 33 点。视频与首骨架帧的起点、前摄录像镜像仍需真机验证。
+- v2 骨架文件存相对首骨架帧的时间、横滚角及 17 点；录制骨架回放显示时逆旋转，判定仍使用对齐后的滤波帧。旧 v1 无横滚数据，历史日志也无法恢复当时的原始 33 点。**实时预览的新矩阵不写入历史文件，视频/骨架回放仍走原来的 FIT_CENTER**；不能因此断言录像和骨架已空间对齐。CameraX 团队称通过 ViewPort 实现录像所见即所得从 1.3.0-alpha01 起支持 [13](https://groups.google.com/a/android.com/g/camerax-developers/c/Y_HJO0e-h88)，项目使用 1.1.0，故不能假定录制文件按视口裁剪。不同录制用例的裁剪、视频与首骨架帧的起点、前摄录像镜像仍需真机验证。
 - 算法版本相同且逐帧缓存与骨架完整匹配时直接复用录制结果；旧记录、不同版本或缓存不可用时回退到当前算法重算。有视频可主动从 MP4 重识别：每 100ms 近似抽帧（长录像最多 350ms、最多 6000 帧），连续跟踪，结果只存内存。重识别无历史重力时间轴，只采用初始个人目标、不重放组中校准；采样、旋转、镜像与对齐仍需设备验证。
 
 
@@ -63,7 +66,7 @@ CameraX ImageAnalysis（16:9 目标比例、保留最新帧）
 
 1. 实时骨架绕过应用层滤波；训练滤波的响应与延迟随入画值、帧率变化，小于跳变门槛的抖动不会被拒绝。有限的合成轨迹不能代表真机表现。
 2. `BodyMetrics` 在两侧躯干入画值差跨越 `0.25` 时，可从双侧中点切到单侧，当前没有切换迟滞。例如两肩 x 分别为 `0.40/0.60`、两侧躯干值为 `0.90/0.651` 和 `0.90/0.649` 时，在点坐标不变的合成帧里肩代表 x 可从 `0.50` 跳到 `0.40`。这是**内部动作度量**，不是显示点在移动。
-3. 单目投影、遮挡、低光、小目标、倒立、左右重叠及快速动作都可能使点偏移；模型是否在用户设备上混淆左右肩，需视频和原始轨迹验证。静止的身体整体偏移、单个肩点偏移、动作时滞后需分别排查。
+3. 单目投影、遮挡、低光、小目标、倒立、左右重叠及快速动作都可能使点偏移；拍摄另一块屏幕还可能受到屏幕反光、摩尔纹和透视影响。暂停视频后仍持续错位，不能归因于被拍摄人物的运动延迟，但也不能只凭截图认定模型点必然正确或共同视口是唯一原因；99% 是入画值，不是定位正确率。应分别检查静止时整体缩放/偏移、个别关节点误差和运动时滞后。
 4. 原有 `smootherRemovesJitterAndHoldsShortDropouts` 测试的肩 x 在输入里没有变化；临时让普通移动不平滑，该测试仍可通过。它不能作为肩部抗抖有效的证据；应增加真实或明确变化的肩点轨迹测试。
 5. 不识别墙、折凳、横杆接触或身体受力，不保证动作安全。个人目标可放宽阈值，不代表标准动作。
 
@@ -83,7 +86,9 @@ CameraX ImageAnalysis（16:9 目标比例、保留最新帧）
 
 ## 6. 代码与验证入口
 
-- 相机和模型：[CameraController.java](../../app/src/main/java/com/zxw/fitness/camera/CameraController.java)、[app/build.gradle](../../app/build.gradle)；绘制：[SkeletonOverlay.java](../../app/src/main/java/com/zxw/fitness/camera/SkeletonOverlay.java)、[TrainingActivity.java](../../app/src/main/java/com/zxw/fitness/ui/TrainingActivity.java)。
+- 相机和模型：[CameraController.java](../../app/src/main/java/com/zxw/fitness/camera/CameraController.java)、[CameraPreviewTransform.java](../../app/src/main/java/com/zxw/fitness/camera/CameraPreviewTransform.java)、[PreviewSessionGate.java](../../app/src/main/java/com/zxw/fitness/camera/PreviewSessionGate.java)、[app/build.gradle](../../app/build.gradle)；绘制：[SkeletonOverlay.java](../../app/src/main/java/com/zxw/fitness/camera/SkeletonOverlay.java)、[TrainingActivity.java](../../app/src/main/java/com/zxw/fitness/ui/TrainingActivity.java)。
 - 数据、几何与滤波：[PoseFrame.java](../../app/src/main/java/com/zxw/fitness/model/PoseFrame.java)、[PoseMath.java](../../app/src/main/java/com/zxw/fitness/pose/PoseMath.java)、[BodyMetrics.java](../../app/src/main/java/com/zxw/fitness/pose/BodyMetrics.java)、[PoseSmoother.java](../../app/src/main/java/com/zxw/fitness/pose/PoseSmoother.java)、[FrozenPoseRecovery.java](../../app/src/main/java/com/zxw/fitness/pose/FrozenPoseRecovery.java)、[GravityAlign.java](../../app/src/main/java/com/zxw/fitness/pose/GravityAlign.java)。
 - 回放：[PoseLog.java](../../app/src/main/java/com/zxw/fitness/data/PoseLog.java)、[PoseLogWriter.java](../../app/src/main/java/com/zxw/fitness/data/PoseLogWriter.java)、[VideoPoseReanalyzer.java](../../app/src/main/java/com/zxw/fitness/camera/VideoPoseReanalyzer.java)、[VideoReanalysisRunner.java](../../app/src/main/java/com/zxw/fitness/analysis/VideoReanalysisRunner.java)；合成测试：[VideoReanalysisRunnerTest.java](../../app/src/test/java/com/zxw/fitness/VideoReanalysisRunnerTest.java)、[PoseDiagnosticsTest.java](../../app/src/test/java/com/zxw/fitness/PoseDiagnosticsTest.java)、[PoseAnalyzerTest.java](../../app/src/test/java/com/zxw/fitness/PoseAnalyzerTest.java)。
-- 真机验证应包含：深蹲站起时观察冻结、恢复提示、单肢活动误报、识别间隔和计数；静止及运动时左右肩标注误差、抖动与换侧；前/后摄的空间映射和镜像；同一片段实时、视频及骨架回放对齐。模型仍可能一直输出折叠骨架，不能把合成结果当作修复保证。合成回归和安全边界见[索引](README.md)。
+- 对齐测试：[PreviewSessionGateTest.java](../../app/src/test/java/com/zxw/fitness/camera/PreviewSessionGateTest.java) 验证切镜头的状态保护；[CameraPreviewTransformTest.java](../../app/src/androidTest/java/com/zxw/fitness/camera/CameraPreviewTransformTest.java) 用合成图像、裁剪和预览矩阵检查 0/90/180/270 度、前后镜像、布局偏移与旧回放。设备测试仍是模拟 ImageProxy/预览目标，不是 ML Kit 或真实摄像头的端到端验证。
+- 真机验证应包含：手机固定，先拍暂停视频及真实静止人体，分别比较头、肩、髋、膝、踝的整体位置和个别点；切换前后摄、改变人与镜头的距离并验证镜像；再观察动作时延迟；最后检查录制视频、骨架动画和旧历史回放。深蹲站起时还应观察冻结恢复、单肢活动误报和计数。模型仍可能输出错误骨架，不能把合成结果当作手机上已修复的保证。合成回归和安全边界见[索引](README.md)。
+- CameraX 坐标接口与前提：[CoordinateTransform](https://developer.android.com/reference/androidx/camera/view/transform/CoordinateTransform)、[ImageProxyTransformFactory](https://developer.android.com/reference/androidx/camera/view/transform/ImageProxyTransformFactory)、[PreviewView](https://developer.android.com/reference/androidx/camera/view/PreviewView)。
